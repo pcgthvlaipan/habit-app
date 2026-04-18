@@ -264,9 +264,16 @@ export function subscribeToHabits(userId, onUpdate, onError) {
         const lSnap = await getDocs(query(collection(db,"users",userId,"habits",hDoc.id,"logs"), orderBy("date","asc")));
         const logs  = lSnap.docs.map(d => d.data());
         const obj   = {
-          id: hDoc.id, name: hd.name??"Unnamed", frequency: hd.frequency??"daily",
-          scheduledDays: hd.scheduledDays??WEEK_DAYS, icon: hd.icon??"✨", color: pickColor(idx),
-          createdAt: toDate(hd.createdAt),
+          id:              hDoc.id,
+          name:            hd.name            ?? "Unnamed",
+          frequency:       hd.frequency        ?? "daily",
+          scheduledDays:   hd.scheduledDays    ?? WEEK_DAYS,
+          icon:            hd.icon             ?? "✨",
+          color:           pickColor(idx),
+          createdAt:       toDate(hd.createdAt),
+          reminderEnabled: hd.reminderEnabled  ?? false,
+          reminderTime:    hd.reminderTime     ?? "08:00",
+          gcalEventId:     hd.gcalEventId      ?? null,
         };
         const stats = computeHabitStats(logs, obj);
         return { ...obj, ...stats, _rawLogs: logs };
@@ -311,11 +318,26 @@ export async function logHabitDate(uid, hid, dateStr, status) {
     await setDoc(ref, { date:Timestamp.fromDate(new Date(dateStr)), status });
   }
 }
-export async function addHabit(uid, {name,frequency,scheduledDays,icon}) {
-  await addDoc(collection(db,"users",uid,"habits"), { name, frequency, scheduledDays:scheduledDays??WEEK_DAYS, icon:icon??"✨", createdAt:serverTimestamp() });
+export async function addHabit(uid, {name,frequency,scheduledDays,icon,reminderEnabled,reminderTime}) {
+  await addDoc(collection(db,"users",uid,"habits"), {
+    name, frequency,
+    scheduledDays: scheduledDays ?? WEEK_DAYS,
+    icon: icon ?? "✨",
+    reminderEnabled: reminderEnabled ?? false,
+    reminderTime:    reminderTime    ?? "08:00",
+    gcalEventId:     null,
+    createdAt:       serverTimestamp(),
+  });
 }
-export async function editHabit(uid, hid, {name,frequency,scheduledDays,icon}) {
-  await updateDoc(doc(db,"users",uid,"habits",hid), { name, frequency, scheduledDays:scheduledDays??WEEK_DAYS, icon });
+export async function editHabit(uid, hid, {name,frequency,scheduledDays,icon,reminderEnabled,reminderTime,gcalEventId}) {
+  await updateDoc(doc(db,"users",uid,"habits",hid), {
+    name, frequency,
+    scheduledDays:   scheduledDays ?? WEEK_DAYS,
+    icon,
+    reminderEnabled: reminderEnabled ?? false,
+    reminderTime:    reminderTime    ?? "08:00",
+    gcalEventId:     gcalEventId     ?? null,
+  });
 }
 export async function deleteHabit(uid, hid) {
   const snap = await getDocs(collection(db,"users",uid,"habits",hid,"logs"));

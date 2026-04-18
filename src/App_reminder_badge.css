@@ -95,6 +95,13 @@ button{font-family:var(--font);cursor:pointer;border:none;outline:none}
 .habit-freq{font-size:11px;color:var(--text-2);font-weight:500}
 .habit-right{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0}
 .habit-streak{font-size:11px;color:var(--coral);font-weight:600}
+.habit-reminder-badge{
+  display:inline-flex;align-items:center;
+  font-size:10px;font-weight:700;
+  color:#6B7280;background:#F3F4F6;
+  border-radius:20px;padding:2px 7px;
+  letter-spacing:0.1px;white-space:nowrap;
+}
 .habit-saving{font-size:11px;color:var(--text-3);font-weight:600}
 .habit-badge{font-size:11px;font-weight:700;padding:4px 10px;border-radius:20px}
 .badge-pending{background:#F3F4F6;color:var(--text-3)}

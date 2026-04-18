@@ -380,7 +380,7 @@ function HabitCard({habit,selected,onSelect,onLog,onEdit,onDelete}) {
         <span className="habit-name">{name}</span>
         <div style={{display:"flex",alignItems:"center",gap:5,marginTop:3,flexWrap:"wrap"}}>
           <span className="habit-freq">{freqLabel}</span>
-          {/* Reminder badge — show if reminder is on */}
+          {/* Reminder time badge */}
           {reminderEnabled && reminderTime && (
             <span className="habit-reminder-badge">
               ⏰ {formatTime(reminderTime)}
