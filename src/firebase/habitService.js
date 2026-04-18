@@ -209,7 +209,7 @@ export async function fetchUser(userId) {
  * @returns {Function} unsubscribe — call this in useEffect cleanup
  */
 export function subscribeToHabits(userId, onUpdate, onError) {
-  const habitsRef = collection(db, "users", userId, "habits");
+  const habitsRef = collection(db, "habits");
 
   const unsubscribe = onSnapshot(
     habitsRef,
@@ -220,7 +220,7 @@ export function subscribeToHabits(userId, onUpdate, onError) {
           const habitData = habitDoc.data();
 
           // Fetch this habit's log sub-collection, ordered oldest → newest
-          const logsRef  = collection(db, "users", userId, "habits", habitId, "logs");
+          const logsRef  = collection(db, "habits", habitId, "logs");
           const logsSnap = await getDocs(query(logsRef, orderBy("date", "asc")));
           const logs     = logsSnap.docs.map((d) => d.data());
 
