@@ -1,33 +1,95 @@
 // ═══════════════════════════════════════════════════════════════
 // src/firebase/habitService.js
-// DATA LAYER — Firestore reads AND writes
+// DATA LAYER — Auth + Firestore reads & writes
 //
-// Exports:
-//   fetchUser(userId)                     → user profile
-//   subscribeToHabits(userId, cb, errCb)  → real-time listener
-//   computeSummary(habits)                → dashboard KPIs
-//   logHabitToday(userId, habitId, status)→ write today's log
-//   addHabit(userId, name, frequency)     → create new habit
+// Auth exports:
+//   loginUser(email, password)
+//   registerUser(email, password)
+//   logoutUser()
+//   subscribeToAuth(callback)
+//   ensureUserDoc(userId, name)
+//
+// Data exports:
+//   fetchUser(userId)
+//   subscribeToHabits(userId, onUpdate, onError)
+//   computeSummary(habits)
+//   logHabitToday(userId, habitId, status)
+//   addHabit(userId, name, frequency)
 // ═══════════════════════════════════════════════════════════════
 
 import {
-  doc, getDoc,
-  collection, getDocs, addDoc,
+  doc, getDoc, setDoc, addDoc,
+  collection, getDocs,
   onSnapshot, query, orderBy,
-  Timestamp, setDoc, serverTimestamp,
+  Timestamp, serverTimestamp,
 } from "firebase/firestore";
+
+import {
+  getAuth,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged,
+} from "firebase/auth";
+
 import { db } from "./firebaseConfig";
 
-// 🔑 Replace with your actual Firestore user document ID
-export const USER_ID = "RRAUyTCZbrmoWHuWMgfB";
+// Get the Firebase Auth instance
+const auth = getAuth();
 
-// ── Visual config ────────────────────────────────────────────────
-const HABIT_COLORS = ["#34C77B","#FF6B6B","#4E8EF7","#A78BFA","#F59E0B","#E879A8"];
-const HABIT_ICONS  = {
+// ─────────────────────────────────────────────────────────────
+// AUTH FUNCTIONS
+// ─────────────────────────────────────────────────────────────
+
+/** Register a new user with email + password */
+export async function registerUser(email, password) {
+  return createUserWithEmailAndPassword(auth, email, password);
+}
+
+/** Sign in an existing user */
+export async function loginUser(email, password) {
+  return signInWithEmailAndPassword(auth, email, password);
+}
+
+/** Sign out the current user */
+export async function logoutUser() {
+  return signOut(auth);
+}
+
+/**
+ * Subscribe to auth state changes.
+ * Callback receives: Firebase User object (logged in) or null (logged out)
+ * Returns unsubscribe function — call it in useEffect cleanup.
+ */
+export function subscribeToAuth(callback) {
+  return onAuthStateChanged(auth, callback);
+}
+
+/**
+ * Creates the user profile document in Firestore after registration.
+ * Safe to call multiple times — uses setDoc with merge:true.
+ */
+export async function ensureUserDoc(userId, name) {
+  const userRef = doc(db, "users", userId);
+  await setDoc(userRef, {
+    name:      name,
+    createdAt: serverTimestamp(),
+  }, { merge: true });
+}
+
+// ─────────────────────────────────────────────────────────────
+// VISUAL CONFIG
+// ─────────────────────────────────────────────────────────────
+const HABIT_COLORS = [
+  "#34C77B", "#FF6B6B", "#4E8EF7",
+  "#A78BFA", "#F59E0B", "#E879A8",
+];
+
+const HABIT_ICONS = {
   exercise:"🏃", running:"🏃", reading:"📖", read:"📖",
-  water:"💧", "drink water":"💧", meditation:"🧘", sleep:"😴",
-  diet:"🥗", study:"📚", coding:"💻", journal:"📝",
-  walk:"🚶", yoga:"🧘", gym:"🏋️",
+  water:"💧", "drink water":"💧", meditation:"🧘",
+  sleep:"😴", diet:"🥗", study:"📚", coding:"💻",
+  journal:"📝", walk:"🚶", yoga:"🧘", gym:"🏋️",
 };
 
 function toDate(v) {
@@ -36,88 +98,113 @@ function toDate(v) {
   if (v?.seconds) return new Date(v.seconds * 1000);
   return new Date(v);
 }
-function pickIcon(name="")  { return HABIT_ICONS[name.toLowerCase().trim()] ?? "✨"; }
-function pickColor(i)        { return HABIT_COLORS[i % HABIT_COLORS.length]; }
+function pickIcon(name = "")  { return HABIT_ICONS[name.toLowerCase().trim()] ?? "✨"; }
+function pickColor(index)      { return HABIT_COLORS[index % HABIT_COLORS.length]; }
 
-// ── Stat calculations ────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// STAT CALCULATIONS
+// ─────────────────────────────────────────────────────────────
 function computeHabitStats(logs) {
-  const today = new Date();
+  const today  = new Date();
   const logMap = new Map();
+
   for (const log of logs) {
-    const key = toDate(log.date).toISOString().slice(0,10);
+    const key = toDate(log.date).toISOString().slice(0, 10);
     logMap.set(key, log.status);
   }
 
-  const todayKey    = today.toISOString().slice(0,10);
+  const todayKey    = today.toISOString().slice(0, 10);
   const todayStatus = logMap.get(todayKey) ?? "none";
 
-  // Streak
+  // Streak: walk backwards from today
   let streak = 0;
-  const checkDate = new Date(today);
-  if (todayStatus === "none") checkDate.setDate(checkDate.getDate()-1);
+  const check = new Date(today);
+  if (todayStatus === "none") check.setDate(check.getDate() - 1);
   while (true) {
-    const key = checkDate.toISOString().slice(0,10);
-    if (logMap.get(key) === "done") { streak++; checkDate.setDate(checkDate.getDate()-1); }
+    const key = check.toISOString().slice(0, 10);
+    if (logMap.get(key) === "done") { streak++; check.setDate(check.getDate() - 1); }
     else break;
   }
 
   // Success rate
-  const totalLogs = logs.length;
-  const doneLogs  = logs.filter(l => l.status==="done").length;
-  const successRate = totalLogs > 0 ? Math.round(doneLogs/totalLogs*100) : 0;
+  const total       = logs.length;
+  const done        = logs.filter(l => l.status === "done").length;
+  const successRate = total > 0 ? Math.round(done / total * 100) : 0;
 
-  // Chart 7d
-  const DAYS = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+  // 7-day chart
+  const DAYS      = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
   const chartData7d = [];
-  for (let i=6; i>=0; i--) {
-    const d = new Date(today); d.setDate(d.getDate()-i);
-    chartData7d.push({ day: DAYS[d.getDay()], val: logMap.get(d.toISOString().slice(0,10))==="done"?1:0 });
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(today); d.setDate(d.getDate() - i);
+    chartData7d.push({
+      day: DAYS[d.getDay()],
+      val: logMap.get(d.toISOString().slice(0,10)) === "done" ? 1 : 0,
+    });
   }
 
-  // Chart 30d
+  // 30-day chart
   const chartData30d = [];
-  for (let i=29; i>=0; i--) {
-    const d = new Date(today); d.setDate(d.getDate()-i);
-    chartData30d.push({ day: String(d.getDate()).padStart(2,"0"), val: logMap.get(d.toISOString().slice(0,10))==="done"?1:0 });
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date(today); d.setDate(d.getDate() - i);
+    chartData30d.push({
+      day: String(d.getDate()).padStart(2, "0"),
+      val: logMap.get(d.toISOString().slice(0,10)) === "done" ? 1 : 0,
+    });
   }
 
-  // Weekly (Mon–Sun)
-  const WEEK = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+  // Weekly Mon–Sun
+  const WEEK         = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
   const dayOfWeek    = today.getDay();
-  const mondayOffset = (dayOfWeek+6)%7;
-  const monday = new Date(today); monday.setDate(today.getDate()-mondayOffset);
-  const weeklyDays = WEEK.map((label,i) => {
-    const d = new Date(monday); d.setDate(monday.getDate()+i);
-    return { day: label, done: logMap.get(d.toISOString().slice(0,10))==="done" };
+  const mondayOffset = (dayOfWeek + 6) % 7;
+  const monday       = new Date(today);
+  monday.setDate(today.getDate() - mondayOffset);
+
+  const weeklyDays = WEEK.map((label, i) => {
+    const d = new Date(monday); d.setDate(monday.getDate() + i);
+    return { day: label, done: logMap.get(d.toISOString().slice(0,10)) === "done" };
   });
 
   return { todayStatus, streak, successRate, chartData7d, chartData30d, weeklyDays };
 }
 
-// ── READ: user profile ───────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// FIRESTORE READS
+// ─────────────────────────────────────────────────────────────
+
+/** Fetch the user profile document once */
 export async function fetchUser(userId) {
-  const snap = await getDoc(doc(db,"users",userId));
-  if (!snap.exists()) throw new Error(`User not found: users/${userId}`);
+  const snap = await getDoc(doc(db, "users", userId));
+  if (!snap.exists()) {
+    // Auto-create a minimal doc if missing (e.g. older accounts)
+    await setDoc(doc(db, "users", userId), { name: "Tam", createdAt: serverTimestamp() }, { merge: true });
+    return { name: "Tam", avatarInitial: "T" };
+  }
   const data = snap.data();
-  return { name: data.name??"Friend", avatarInitial: (data.name??"F")[0].toUpperCase() };
+  return {
+    name:          data.name ?? "Friend",
+    avatarInitial: (data.name ?? "F")[0].toUpperCase(),
+  };
 }
 
-// ── READ: real-time habit subscription ──────────────────────────
+/** Real-time subscription to habits + computed stats */
 export function subscribeToHabits(userId, onUpdate, onError) {
-  const habitsRef = collection(db,"users",userId,"habits");
+  const habitsRef = collection(db, "users", userId, "habits");
+
   return onSnapshot(habitsRef, async (snapshot) => {
     try {
-      const habitPromises = snapshot.docs.map(async (habitDoc, index) => {
+      const promises = snapshot.docs.map(async (habitDoc, index) => {
         const habitId   = habitDoc.id;
         const habitData = habitDoc.data();
-        const logsRef   = collection(db,"users",userId,"habits",habitId,"logs");
-        const logsSnap  = await getDocs(query(logsRef, orderBy("date","asc")));
-        const logs      = logsSnap.docs.map(d => d.data());
-        const stats     = computeHabitStats(logs);
+
+        const logsRef  = collection(db, "users", userId, "habits", habitId, "logs");
+        const logsSnap = await getDocs(query(logsRef, orderBy("date", "asc")));
+        const logs     = logsSnap.docs.map(d => d.data());
+        const stats    = computeHabitStats(logs);
+
         return {
-          id: habitId,
+          id:           habitId,
           name:         habitData.name      ?? "Unnamed Habit",
-          frequency:    habitData.frequency  ?? "Daily",
+          frequency:    habitData.frequency  ?? "daily",
           createdAt:    toDate(habitData.createdAt),
           icon:         pickIcon(habitData.name),
           color:        pickColor(index),
@@ -130,43 +217,52 @@ export function subscribeToHabits(userId, onUpdate, onError) {
           _rawLogs:     logs,
         };
       });
-      onUpdate(await Promise.all(habitPromises));
-    } catch(err) { onError(err); }
+
+      onUpdate(await Promise.all(promises));
+    } catch (err) {
+      onError(err);
+    }
   }, onError);
 }
 
-// ── READ: summary KPIs ───────────────────────────────────────────
+/** Compute dashboard-level summary from enriched habits array */
 export function computeSummary(habits) {
   const totalHabits   = habits.length;
-  const doneToday     = habits.filter(h => h.todayStatus==="done").length;
-  const currentStreak = habits.reduce((max,h) => Math.max(max,h.streak), 0);
-  const withLogs      = habits.filter(h => h._rawLogs.length>0);
-  const successRate   = withLogs.length>0
-    ? Math.round(withLogs.reduce((s,h)=>s+h.successRate,0)/withLogs.length)
+  const doneToday     = habits.filter(h => h.todayStatus === "done").length;
+  const currentStreak = habits.reduce((max, h) => Math.max(max, h.streak), 0);
+  const withLogs      = habits.filter(h => h._rawLogs.length > 0);
+  const successRate   = withLogs.length > 0
+    ? Math.round(withLogs.reduce((s, h) => s + h.successRate, 0) / withLogs.length)
     : 0;
   return { totalHabits, doneToday, currentStreak, successRate };
 }
 
-// ── WRITE: log today's status for a habit ───────────────────────
-// Creates or overwrites a log document for today's date.
+// ─────────────────────────────────────────────────────────────
+// FIRESTORE WRITES
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Log today's status for a habit.
+ * Uses today's date as the document ID — one log per day per habit.
+ * Calling this again today overwrites the previous entry.
+ */
 export async function logHabitToday(userId, habitId, status) {
-  const today  = new Date().toISOString().slice(0,10); // "YYYY-MM-DD"
-  const logRef = doc(
-    db, "users", userId, "habits", habitId, "logs", today
-  );
-  // setDoc with merge:false ensures one document per day (keyed by date string)
+  const todayKey = new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
+  const logRef   = doc(db, "users", userId, "habits", habitId, "logs", todayKey);
   await setDoc(logRef, {
     date:   Timestamp.fromDate(new Date()),
     status: status, // "done" or "missed"
   });
 }
 
-// ── WRITE: add a new habit ───────────────────────────────────────
+/**
+ * Add a new habit document to the user's habits sub-collection.
+ */
 export async function addHabit(userId, name, frequency) {
   const habitsRef = collection(db, "users", userId, "habits");
   await addDoc(habitsRef, {
     name:      name,
-    frequency: frequency, // "daily" or "weekly"
+    frequency: frequency,
     createdAt: serverTimestamp(),
   });
 }
