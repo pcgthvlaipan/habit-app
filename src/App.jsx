@@ -1,14 +1,24 @@
 // ═══════════════════════════════════════════════════════════════
-// App.jsx — Habit App by Tam
-// All UI components in one file for easy copy-paste into CodeSandbox.
-// Firebase data layer is imported from ./firebase/habitService
+// App.jsx — Habit App by Tam  (Interactive version)
+// Features added:
+//   ✅ Log "Done" or "Missed" directly from habit card
+//   ✅ Add new habit via bottom sheet modal
+//   ✅ Floating action button (+)
+//   ✅ Real-time Firestore sync
 // ═══════════════════════════════════════════════════════════════
 
 import { useState, useEffect } from "react";
 import "./App.css";
-import { fetchUser, subscribeToHabits, computeSummary, USER_ID } from "./firebase/habitService";
+import {
+  fetchUser,
+  subscribeToHabits,
+  computeSummary,
+  logHabitToday,
+  addHabit,
+  USER_ID,
+} from "./firebase/habitService";
 
-// ─── Helpers ────────────────────────────────────────────────────
+// ─── Greeting ───────────────────────────────────────────────────
 function getGreeting() {
   const h = new Date().getHours();
   if (h < 12) return "Good morning";
@@ -27,13 +37,13 @@ export default function App() {
   const [chartPeriod,   setChartPeriod]   = useState("7");
   const [loading,       setLoading]       = useState(true);
   const [error,         setError]         = useState(null);
+  const [showAddModal,  setShowAddModal]  = useState(false);
+  const [logging,       setLogging]       = useState({}); // habitId → true while saving
 
-  // Fetch user profile once
   useEffect(() => {
     fetchUser(USER_ID).then(setUser).catch(e => setError(e.message));
   }, []);
 
-  // Real-time habit subscription
   useEffect(() => {
     const unsub = subscribeToHabits(
       USER_ID,
@@ -51,9 +61,31 @@ export default function App() {
     return () => unsub();
   }, []);
 
-  const chartData    = selectedHabit ? (chartPeriod === "7" ? selectedHabit.chartData7d : selectedHabit.chartData30d) : [];
+  // ── Log done/missed for a habit today ───────────────────────
+  async function handleLog(habitId, status) {
+    setLogging(prev => ({ ...prev, [habitId]: true }));
+    try {
+      await logHabitToday(USER_ID, habitId, status);
+    } catch (e) {
+      alert("Could not save: " + e.message);
+    } finally {
+      setLogging(prev => ({ ...prev, [habitId]: false }));
+    }
+  }
+
+  // ── Add new habit ────────────────────────────────────────────
+  async function handleAddHabit(name, frequency) {
+    try {
+      await addHabit(USER_ID, name, frequency);
+      setShowAddModal(false);
+    } catch (e) {
+      alert("Could not add habit: " + e.message);
+    }
+  }
+
+  const chartData     = selectedHabit ? (chartPeriod === "7" ? selectedHabit.chartData7d : selectedHabit.chartData30d) : [];
   const weeklySummary = selectedHabit?.weeklyDays ?? [];
-  const aiMessage    = user
+  const aiMessage     = user
     ? `You're doing great, ${user.name}. Consistency is your superpower — keep showing up, even on the tough days. 🌟`
     : "Keep going — small progress is still progress. 🌟";
 
@@ -76,17 +108,19 @@ export default function App() {
     <div className="shell">
       <div className="phone">
 
-        {/* ── Header ── */}
         <Header user={user ?? { name: "Tam", avatarInitial: "T" }} />
 
-        {/* ── Summary ── */}
         {summary && <SummaryCards data={summary} />}
 
-        {/* ── Habits ── */}
         <p className="section-label anim-2">My Habits</p>
-        <HabitList habits={habits} selectedId={selectedHabit?.id} onSelect={setSelectedHabit} />
+        <HabitList
+          habits={habits}
+          selectedId={selectedHabit?.id}
+          logging={logging}
+          onSelect={setSelectedHabit}
+          onLog={handleLog}
+        />
 
-        {/* ── Chart ── */}
         {selectedHabit && (
           <ProgressChart
             habit={selectedHabit}
@@ -96,13 +130,24 @@ export default function App() {
           />
         )}
 
-        {/* ── Weekly ── */}
         {weeklySummary.length > 0 && <WeeklySummary days={weeklySummary} />}
 
-        {/* ── AI Coach ── */}
         <AICoach message={aiMessage} />
 
-        <div style={{ height: 40 }} />
+        <div style={{ height: 100 }} />
+
+        {/* ── Floating Add Button ── */}
+        <button className="fab" onClick={() => setShowAddModal(true)}>
+          <span className="fab-icon">+</span>
+        </button>
+
+        {/* ── Add Habit Modal ── */}
+        {showAddModal && (
+          <AddHabitModal
+            onAdd={handleAddHabit}
+            onClose={() => setShowAddModal(false)}
+          />
+        )}
       </div>
     </div>
   );
@@ -135,10 +180,10 @@ function Header({ user }) {
 // SUMMARY CARDS
 // ═══════════════════════════════════════════════════════════════
 const CARDS_CFG = [
-  { key: "totalHabits",   label: "Total Habits", icon: "✦", accent: "#4E8EF7", fmt: v => v      },
-  { key: "doneToday",     label: "Done Today",   icon: "✓", accent: "#34C77B", fmt: v => v      },
-  { key: "currentStreak", label: "Streak",       icon: "🔥", accent: "#FF6B6B", fmt: v => `${v}d` },
-  { key: "successRate",   label: "Success",      icon: "◎", accent: "#A78BFA", fmt: v => `${v}%` },
+  { key: "totalHabits",   label: "Total Habits", icon: "✦", accent: "#4E8EF7", fmt: v => v        },
+  { key: "doneToday",     label: "Done Today",   icon: "✓", accent: "#34C77B", fmt: v => v        },
+  { key: "currentStreak", label: "Streak",       icon: "🔥", accent: "#FF6B6B", fmt: v => `${v}d`  },
+  { key: "successRate",   label: "Success",      icon: "◎", accent: "#A78BFA", fmt: v => `${v}%`  },
 ];
 
 function SummaryCards({ data }) {
@@ -158,28 +203,35 @@ function SummaryCards({ data }) {
 // ═══════════════════════════════════════════════════════════════
 // HABIT LIST
 // ═══════════════════════════════════════════════════════════════
-function HabitList({ habits, selectedId, onSelect }) {
+function HabitList({ habits, selectedId, logging, onSelect, onLog }) {
   if (!habits.length) return (
     <div className="habit-empty anim-3">
       <span className="habit-empty-icon">🌱</span>
       <p className="habit-empty-title">No habits yet</p>
-      <p className="habit-empty-sub">Add your first habit in Firestore to get started!</p>
+      <p className="habit-empty-sub">Tap the + button below to add your first habit!</p>
     </div>
   );
 
   return (
     <div className="habit-list anim-3">
       {habits.map(h => (
-        <HabitCard key={h.id} habit={h} selected={h.id === selectedId} onSelect={() => onSelect(h)} />
+        <HabitCard
+          key={h.id}
+          habit={h}
+          selected={h.id === selectedId}
+          isLogging={logging[h.id]}
+          onSelect={() => onSelect(h)}
+          onLog={onLog}
+        />
       ))}
     </div>
   );
 }
 
-function HabitCard({ habit, selected, onSelect }) {
-  const { todayStatus, color, icon, name, frequency, streak } = habit;
-  const badgeClass = todayStatus === "done" ? "badge-done" : todayStatus === "missed" ? "badge-missed" : "badge-pending";
-  const badgeText  = todayStatus === "done" ? "✓  Done"   : todayStatus === "missed" ? "✗  Missed"   : "—  Pending";
+function HabitCard({ habit, selected, isLogging, onSelect, onLog }) {
+  const { id, todayStatus, color, icon, name, frequency, streak } = habit;
+  const done   = todayStatus === "done";
+  const missed = todayStatus === "missed";
 
   return (
     <div
@@ -188,18 +240,107 @@ function HabitCard({ habit, selected, onSelect }) {
         borderColor: selected ? color : "transparent",
         boxShadow:   selected ? `0 4px 20px ${color}28` : undefined,
       }}
-      onClick={onSelect}
     >
-      <div className="habit-icon-bg" style={{ background: `${color}18` }}>
+      {/* Left: icon — tapping selects the habit for chart */}
+      <div
+        className="habit-icon-bg"
+        style={{ background: `${color}18`, cursor: "pointer" }}
+        onClick={onSelect}
+      >
         {icon}
       </div>
-      <div className="habit-info">
+
+      {/* Middle: name + freq */}
+      <div className="habit-info" style={{ cursor: "pointer" }} onClick={onSelect}>
         <span className="habit-name">{name}</span>
         <span className="habit-freq">{frequency}</span>
       </div>
+
+      {/* Right: log buttons */}
       <div className="habit-right">
-        <span className={`habit-badge ${badgeClass}`}>{badgeText}</span>
+        {isLogging ? (
+          <span className="habit-saving">saving…</span>
+        ) : (
+          <div className="log-btns">
+            <button
+              className={`log-btn log-done${done ? " log-done--active" : ""}`}
+              onClick={() => onLog(id, "done")}
+              title="Mark as done"
+            >
+              ✓
+            </button>
+            <button
+              className={`log-btn log-miss${missed ? " log-miss--active" : ""}`}
+              onClick={() => onLog(id, "missed")}
+              title="Mark as missed"
+            >
+              ✗
+            </button>
+          </div>
+        )}
         {streak > 0 && <span className="habit-streak">🔥 {streak}</span>}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ADD HABIT MODAL
+// ═══════════════════════════════════════════════════════════════
+function AddHabitModal({ onAdd, onClose }) {
+  const [name,      setName]      = useState("");
+  const [frequency, setFrequency] = useState("daily");
+  const [saving,    setSaving]    = useState(false);
+
+  async function handleSubmit() {
+    if (!name.trim()) return;
+    setSaving(true);
+    await onAdd(name.trim(), frequency);
+    setSaving(false);
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-sheet" onClick={e => e.stopPropagation()}>
+        {/* Handle bar */}
+        <div className="modal-handle" />
+
+        <p className="modal-title">New Habit</p>
+        <p className="modal-sub">What habit do you want to build?</p>
+
+        <label className="field-label">Habit name</label>
+        <input
+          className="field-input"
+          type="text"
+          placeholder="e.g. Exercise, Reading, Drink Water…"
+          value={name}
+          onChange={e => setName(e.target.value)}
+          autoFocus
+          maxLength={40}
+        />
+
+        <label className="field-label">Frequency</label>
+        <div className="freq-row">
+          {["daily", "weekly"].map(f => (
+            <button
+              key={f}
+              className={`freq-btn${frequency === f ? " freq-btn--active" : ""}`}
+              onClick={() => setFrequency(f)}
+            >
+              {f === "daily" ? "📅 Daily" : "📆 Weekly"}
+            </button>
+          ))}
+        </div>
+
+        <button
+          className="submit-btn"
+          onClick={handleSubmit}
+          disabled={!name.trim() || saving}
+        >
+          {saving ? "Adding…" : "Add Habit ✦"}
+        </button>
+
+        <button className="cancel-btn" onClick={onClose}>Cancel</button>
       </div>
     </div>
   );
@@ -267,9 +408,7 @@ function WeeklySummary({ days }) {
       <div className="weekly-row">
         {days.map(d => (
           <div key={d.day} className="week-day">
-            <div className={`week-dot ${d.done ? "done" : "miss"}`}>
-              {d.done ? "✓" : "✗"}
-            </div>
+            <div className={`week-dot ${d.done ? "done" : "miss"}`}>{d.done ? "✓" : "✗"}</div>
             <span className="week-label">{d.day}</span>
           </div>
         ))}
