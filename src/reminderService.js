@@ -2,17 +2,13 @@
 // src/reminderService.js
 // Handles:
 //   1. Browser Push Notifications (in-app)
-//   2. Google Calendar recurring reminder events
+//   2. Google Calendar recurring reminder events (direct URL)
 // ═══════════════════════════════════════════════════════════════
 
 // ─────────────────────────────────────────────────────────────
 // BROWSER NOTIFICATIONS
 // ─────────────────────────────────────────────────────────────
 
-/**
- * Request notification permission from the browser.
- * Returns: "granted" | "denied" | "default"
- */
 export async function requestNotificationPermission() {
   if (!("Notification" in window)) return "unsupported";
   if (Notification.permission === "granted") return "granted";
@@ -20,9 +16,6 @@ export async function requestNotificationPermission() {
   return result;
 }
 
-/**
- * Show an immediate browser notification (for testing).
- */
 export function showTestNotification(habitName, icon = "✨") {
   if (Notification.permission !== "granted") return;
   new Notification(`Habit Reminder: ${habitName}`, {
@@ -34,47 +27,36 @@ export function showTestNotification(habitName, icon = "✨") {
   });
 }
 
-/**
- * Schedule a daily browser notification at a specific time (HH:MM).
- * Uses setTimeout — works while the browser tab is open.
- * Stores timer IDs in sessionStorage so we can cancel them.
- */
 export function scheduleDailyNotification(habitId, habitName, habitIcon, timeStr) {
-  cancelNotification(habitId); // cancel any existing timer for this habit
+  cancelNotification(habitId);
 
   const [hours, minutes] = timeStr.split(":").map(Number);
   const now    = new Date();
   const target = new Date();
   target.setHours(hours, minutes, 0, 0);
 
-  // If time has already passed today, schedule for tomorrow
   if (target <= now) target.setDate(target.getDate() + 1);
 
-  const delay  = target.getTime() - now.getTime();
+  const delay = target.getTime() - now.getTime();
 
   const timerId = setTimeout(() => {
     if (Notification.permission === "granted") {
       new Notification(`⏰ ${habitName}`, {
-        body:  `Don't forget: ${habitName}! Keep your streak alive 🔥`,
-        icon:  "/icon.png",
-        tag:   `habit-${habitId}`,
+        body: `Don't forget: ${habitName}! Keep your streak alive 🔥`,
+        icon: "/icon.png",
+        tag:  `habit-${habitId}`,
       });
     }
-    // Re-schedule for the next day
     scheduleDailyNotification(habitId, habitName, habitIcon, timeStr);
   }, delay);
 
-  // Store timer ID
   const timers = JSON.parse(sessionStorage.getItem("habitTimers") || "{}");
   timers[habitId] = timerId;
   sessionStorage.setItem("habitTimers", JSON.stringify(timers));
 
-  console.log(`✅ Reminder set for "${habitName}" at ${timeStr} (in ${Math.round(delay/60000)} min)`);
+  console.log(`✅ Reminder set for "${habitName}" at ${timeStr} (in ${Math.round(delay / 60000)} min)`);
 }
 
-/**
- * Cancel a scheduled browser notification for a habit.
- */
 export function cancelNotification(habitId) {
   const timers = JSON.parse(sessionStorage.getItem("habitTimers") || "{}");
   if (timers[habitId]) {
@@ -84,10 +66,6 @@ export function cancelNotification(habitId) {
   }
 }
 
-/**
- * Re-schedule all active reminders on app load.
- * Call this once when the app starts.
- */
 export function rescheduleAllReminders(habits) {
   if (Notification.permission !== "granted") return;
   habits.forEach(h => {
@@ -98,84 +76,69 @@ export function rescheduleAllReminders(habits) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// GOOGLE CALENDAR INTEGRATION
+// GOOGLE CALENDAR INTEGRATION — direct URL (no API key needed)
 // ─────────────────────────────────────────────────────────────
 
-/**
- * Builds the description for a Google Calendar habit reminder event.
- */
-function buildEventDescription(habit) {
-  return [
-    `🎯 Habit: ${habit.name}`,
-    `📅 Frequency: ${habit.frequency === "custom"
-      ? habit.scheduledDays?.join(", ")
-      : habit.frequency}`,
-    ``,
-    `Track your progress in Habit App by Tam.`,
-    ``,
-    `💪 Every day counts. Keep your streak going!`,
-  ].join("\n");
-}
+const DAY_MAP = {
+  Mon: "MO", Tue: "TU", Wed: "WE", Thu: "TH", Fri: "FR", Sat: "SA", Sun: "SU",
+};
 
-/**
- * Builds the RRULE string for a habit's frequency.
- * daily   → every day
- * custom  → specific days (e.g. Mon, Wed, Fri → MO,WE,FR)
- */
 function buildRRule(habit) {
-  const dayMap = {
-    Mon:"MO", Tue:"TU", Wed:"WE", Thu:"TH", Fri:"FR", Sat:"SA", Sun:"SU"
-  };
-
-  if (habit.frequency === "daily") {
-    return "RRULE:FREQ=DAILY";
-  }
-
   if (habit.frequency === "custom" && habit.scheduledDays?.length > 0) {
-    const days = habit.scheduledDays.map(d => dayMap[d] || d).join(",");
+    const days = habit.scheduledDays.map(d => DAY_MAP[d] || d).join(",");
     return `RRULE:FREQ=WEEKLY;BYDAY=${days}`;
   }
-
   return "RRULE:FREQ=DAILY";
 }
 
 /**
- * Creates a Google Calendar recurring reminder event for a habit.
- * Returns the created event object.
- *
- * NOTE: This is called from App.jsx which passes the gcal_create_event
- * function as a parameter — we don't call it directly here.
- * The actual Google Calendar API call happens in App.jsx via the
- * connected Google Calendar tool.
+ * Opens Google Calendar in a new tab with a pre-filled recurring event.
+ * No API key or OAuth needed — uses the public Google Calendar URL scheme.
  */
-export function buildCalendarEventPayload(habit, reminderTime, userTimezone = "Asia/Bangkok") {
-  const [hours, minutes] = reminderTime.split(":").map(Number);
-  const endHours         = hours === 23 ? 0 : hours;
-  const endMinutes       = minutes + 15; // 15 min duration
-  const today            = new Date().toISOString().slice(0, 10);
+export function openGoogleCalendar(habit) {
+  const { reminderTime, name, icon, frequency, scheduledDays } = habit;
+  if (!reminderTime) return;
 
   const pad = n => String(n).padStart(2, "0");
+  const [hours, minutes] = reminderTime.split(":").map(Number);
 
-  return {
-    summary:     `${habit.icon} ${habit.name} Reminder`,
-    description: buildEventDescription(habit),
-    start: {
-      dateTime: `${today}T${pad(hours)}:${pad(minutes)}:00`,
-      timeZone: userTimezone,
-    },
-    end: {
-      dateTime: `${today}T${pad(endHours)}:${pad(endMinutes > 59 ? endMinutes - 60 : endMinutes)}:00`,
-      timeZone: userTimezone,
-    },
-    recurrence: [buildRRule(habit)],
-    reminders: {
-      useDefault: false,
-      overrides: [
-        { method: "popup", minutes: 0  }, // alert exactly at reminder time
-        { method: "popup", minutes: 10 }, // 10 min early warning
-        { method: "email", minutes: 30 }, // email 30 min before
-      ],
-    },
-    colorId: "11", // Tomato red — matches app theme
-  };
+  // End time = start + 15 minutes
+  const totalEndMinutes = hours * 60 + minutes + 15;
+  const endH = Math.floor(totalEndMinutes / 60) % 24;
+  const endM = totalEndMinutes % 60;
+
+  // Today's date as YYYYMMDD
+  const now       = new Date();
+  const dateStr   = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
+  const startStr  = `${dateStr}T${pad(hours)}${pad(minutes)}00`;
+  const endStr    = `${dateStr}T${pad(endH)}${pad(endM)}00`;
+
+  const freqLabel = frequency === "custom" && scheduledDays?.length
+    ? scheduledDays.join(", ")
+    : "daily";
+
+  const description = [
+    `🎯 Habit: ${name}`,
+    `📅 Frequency: ${freqLabel}`,
+    ``,
+    `Track your progress in Habit App by Tam.`,
+    `💪 Every day counts. Keep your streak going!`,
+  ].join("\n");
+
+  const url = new URL("https://calendar.google.com/calendar/render");
+  url.searchParams.set("action",  "TEMPLATE");
+  url.searchParams.set("text",    `${icon} ${name} Reminder`);
+  url.searchParams.set("dates",   `${startStr}/${endStr}`);
+  url.searchParams.set("details", description);
+  url.searchParams.set("recur",   buildRRule(habit));
+  url.searchParams.set("ctz",     "Asia/Bangkok");
+  url.searchParams.set("sf",      "true");
+  url.searchParams.set("output",  "xml");
+
+  window.open(url.toString(), "_blank");
+}
+
+// Kept for backward compatibility — no longer needed but won't break anything
+export function buildCalendarEventPayload(habit, reminderTime, userTimezone = "Asia/Bangkok") {
+  return {};
 }

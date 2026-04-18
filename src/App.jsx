@@ -18,7 +18,7 @@ import {
   scheduleDailyNotification,
   cancelNotification,
   rescheduleAllReminders,
-  buildCalendarEventPayload,
+  openGoogleCalendar,           // ← FIXED: was buildCalendarEventPayload
 } from "./reminderService";
 
 function getGreeting() {
@@ -123,21 +123,16 @@ function Dashboard({ authUser }) {
     e => { setError(e.message); setLoading(false); }
   ),[uid]);
 
-  // Re-schedule browser reminders whenever habits change
   useEffect(() => {
     if (habits.length > 0) rescheduleAllReminders(habits);
   }, [habits]);
 
   const earnedBadges = useMemo(() => computeEarnedBadges(habits, summary), [habits, summary]);
 
-  // Optimistic update — UI changes instantly, Firestore saves in background
   function handleLog(hid, status) {
-    // 1. Update UI immediately — user sees instant response
     setHabits(prev => prev.map(h =>
       h.id !== hid ? h : { ...h, todayStatus: status }
     ));
-
-    // 2. Update Done Today count immediately
     setSummary(prev => {
       if (!prev) return prev;
       const h       = habits.find(x => x.id === hid);
@@ -146,25 +141,19 @@ function Dashboard({ authUser }) {
       const delta   = isDone && !wasDone ? 1 : !isDone && wasDone ? -1 : 0;
       return { ...prev, doneToday: Math.max(0, prev.doneToday + delta) };
     });
-
-    // 3. Save to Firestore silently — no await, no spinner, no delay
     logHabitToday(uid, hid, status).catch(e => console.error("Save failed:", e.message));
   }
+
   async function handleAddHabit(d) {
     try {
       await addHabit(uid, d);
       setShowAdd(false);
-      // Schedule browser notification if enabled
-      if (d.reminderEnabled && d.reminderTime && notifPerm === "granted") {
-        // We get the new habit id from next snapshot — rescheduleAllReminders handles it
-      }
     } catch(e) { alert(e.message); }
   }
 
   async function handleEditHabit(d) {
     try {
       await editHabit(uid, editing.id, d);
-      // Update browser notification
       if (d.reminderEnabled && d.reminderTime && notifPerm === "granted") {
         scheduleDailyNotification(editing.id, d.name, d.icon, d.reminderTime);
       } else {
@@ -173,6 +162,7 @@ function Dashboard({ authUser }) {
       setEditing(null);
     } catch(e) { alert(e.message); }
   }
+
   async function handleDelete(hid) {
     if (!window.confirm("Delete this habit and all its data?")) return;
     try {
@@ -189,16 +179,16 @@ function Dashboard({ authUser }) {
     else if (result === "denied") alert("Notifications blocked. Please enable them in your browser settings.");
   }
 
-  async function handleCreateGcalReminder(habit) {
+  // ← FIXED: now actually opens Google Calendar in a new tab
+  function handleCreateGcalReminder(habit) {
     if (!habit.reminderEnabled || !habit.reminderTime) return;
     setGcalStatus(p => ({ ...p, [habit.id]: "creating" }));
     try {
-      const payload = buildCalendarEventPayload(habit, habit.reminderTime, "Asia/Bangkok");
-      // Store the payload in state for the ReminderModal to display
-      setGcalStatus(p => ({ ...p, [habit.id]: "ready", payload }));
+      openGoogleCalendar(habit);
+      setGcalStatus(p => ({ ...p, [habit.id]: "done" }));
     } catch(e) {
       setGcalStatus(p => ({ ...p, [habit.id]: "error" }));
-      alert("Could not prepare Google Calendar event: " + e.message);
+      alert("Could not open Google Calendar: " + e.message);
     }
   }
 
@@ -219,7 +209,6 @@ function Dashboard({ authUser }) {
 
       {/* TODAY */}
       {tab==="today"&&<>
-        {/* Notification permission banner */}
         {notifPerm !== "granted" && (
           <NotifBanner onAllow={handleRequestNotifPermission} denied={notifPerm==="denied"}/>
         )}
@@ -280,7 +269,7 @@ function Dashboard({ authUser }) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// HEADER — lively gradient
+// HEADER
 // ═══════════════════════════════════════════════════════════════
 function Header({ user, onLogout, earnedCount }) {
   return (
@@ -362,7 +351,6 @@ function HabitCard({habit,selected,onSelect,onLog,onEdit,onDelete}) {
   const [menu,setMenu] = useState(false);
   const freqLabel = frequency==="daily"?"Daily":frequency==="weekly"?"Weekly":scheduledDays?.join(", ")??"Custom";
 
-  // Format reminder time to 12h format e.g. "7:30 PM"
   function formatTime(t) {
     if (!t) return "";
     const [h, m] = t.split(":").map(Number);
@@ -380,7 +368,6 @@ function HabitCard({habit,selected,onSelect,onLog,onEdit,onDelete}) {
         <span className="habit-name">{name}</span>
         <div style={{display:"flex",alignItems:"center",gap:5,marginTop:3,flexWrap:"wrap"}}>
           <span className="habit-freq">{freqLabel}</span>
-          {/* Reminder badge — show if reminder is on */}
           {reminderEnabled && reminderTime && (
             <span className="habit-reminder-badge">
               ⏰ {formatTime(reminderTime)}
@@ -450,7 +437,6 @@ function HabitFormModal({title,initial,onSave,onClose}) {
         <div className="modal-handle"/>
         <p className="modal-title">{title}</p>
 
-        {/* Icon */}
         <label className="field-label">Icon</label>
         <div className="icon-picker-row">
           <div className="icon-selected">{icon}</div>
@@ -489,7 +475,6 @@ function HabitFormModal({title,initial,onSave,onClose}) {
           {days.length>0&&<p className="day-summary">{days.length}× per week · {days.join(", ")}</p>}
         </>}
 
-        {/* Reminder section */}
         <div className="reminder-section">
           <div className="reminder-toggle-row">
             <div>
@@ -527,25 +512,22 @@ function HabitFormModal({title,initial,onSave,onClose}) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// CALENDAR VIEW — optimistic local state, instant response
+// CALENDAR VIEW
 // ═══════════════════════════════════════════════════════════════
 function CalendarView({habit,uid}) {
   const today    = new Date();
   const todayStr = today.toISOString().slice(0,10);
   const [year,setYear]     = useState(today.getFullYear());
   const [month,setMonth]   = useState(today.getMonth());
-  // Local override map: dateStr → status  (instant UI, no waiting for Firestore)
   const [localLog, setLocalLog] = useState({});
 
   const FULL_MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
-  // Merge Firestore data with local optimistic overrides
   const calDays = useMemo(() => {
     if (!habit?.buildCalendar) return [];
     const start = new Date(year, month, 1);
     const end   = new Date(year, month+1, 0);
     const days  = habit.buildCalendar(start, end);
-    // Apply local overrides on top of Firestore data
     return days.map(d => ({
       ...d,
       status: localLog[d.date] !== undefined ? localLog[d.date] : d.status,
@@ -563,16 +545,12 @@ function CalendarView({habit,uid}) {
     setYear(d.getFullYear()); setMonth(d.getMonth());
   }
 
-  // Optimistic log: update local state instantly, save to Firestore in background
   function handleDayLog(dateStr, currentStatus, newStatus) {
     const resolvedStatus = currentStatus === newStatus ? "none" : newStatus;
-    // 1. Update UI immediately
     setLocalLog(prev => ({ ...prev, [dateStr]: resolvedStatus }));
-    // 2. Save to Firestore silently
     logHabitDate(uid, habit.id, dateStr, resolvedStatus)
       .catch(e => {
         console.error("Calendar save failed:", e.message);
-        // Revert on error
         setLocalLog(prev => ({ ...prev, [dateStr]: currentStatus }));
       });
   }
@@ -583,7 +561,6 @@ function CalendarView({habit,uid}) {
 
   return (
     <div className="cal-card">
-      {/* Quick jumps */}
       <div className="cal-quick-btns">
         {[["This month",0],["Last month",-1],["2 months ago",-2]].map(([l,o])=>(
           <button key={l}
@@ -592,7 +569,6 @@ function CalendarView({habit,uid}) {
         ))}
       </div>
 
-      {/* Month nav */}
       <div className="cal-nav">
         <button className="cal-nav-btn" onClick={prevMonth}>‹</button>
         <div>
@@ -602,12 +578,10 @@ function CalendarView({habit,uid}) {
         <button className="cal-nav-btn" onClick={nextMonth} disabled={isCur}>›</button>
       </div>
 
-      {/* Day headers */}
       <div className="cal-grid cal-header-row">
         {["M","T","W","T","F","S","S"].map((d,i)=><div key={i} className="cal-day-hdr">{d}</div>)}
       </div>
 
-      {/* Calendar grid */}
       <div className="cal-grid">
         {Array.from({length:offset},(_,i)=><div key={`e${i}`}/>)}
         {calDays.map((d,i)=>(
@@ -621,7 +595,6 @@ function CalendarView({habit,uid}) {
         ))}
       </div>
 
-      {/* Legend */}
       <div className="cal-legend">
         <span className="cal-legend-item"><span className="cal-dot done-dot"/>Done</span>
         <span className="cal-legend-item"><span className="cal-dot miss-dot"/>Missed</span>
@@ -632,7 +605,6 @@ function CalendarView({habit,uid}) {
   );
 }
 
-// Individual tappable day cell — instant optimistic response
 function DayCell({ d, isToday, isFuture, onLog }) {
   const [open, setOpen] = useState(false);
 
@@ -642,7 +614,6 @@ function DayCell({ d, isToday, isFuture, onLog }) {
                     : "cal-none";
 
   function tap(newStatus) {
-    // Instantly update, close menu — no waiting
     onLog(d.date, d.status, newStatus);
     setOpen(false);
   }
@@ -729,7 +700,7 @@ function WeeklySummary({days}) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// AI COACH — lively colors + reward hints
+// AI COACH
 // ═══════════════════════════════════════════════════════════════
 function AICoachCard({habits,summary,earnedBadges}) {
   const name     = habits[0]?.name ?? "your habits";
@@ -739,7 +710,6 @@ function AICoachCard({habits,summary,earnedBadges}) {
   const total    = summary?.totalHabits ?? 0;
   const allDone  = done === total && total > 0;
 
-  // Pick the most relevant message
   const message = allDone
     ? `🎉 All habits done today! You're on fire, keep this momentum going!`
     : streak >= 7
@@ -750,7 +720,6 @@ function AICoachCard({habits,summary,earnedBadges}) {
     ? `⚡ ${streak} days in a row! Consistency is your superpower. Keep going!`
     : `💪 Every habit done is a vote for the person you want to become. You've got this!`;
 
-  // Next badge hint
   const unearned = REWARD_BADGES.filter(b => !earnedBadges.find(e=>e.id===b.id));
   const nextBadge = unearned.find(b => b.type==="streak")||unearned[0];
 
@@ -763,7 +732,6 @@ function AICoachCard({habits,summary,earnedBadges}) {
       </div>
       <p className="ai-msg">{message}</p>
 
-      {/* Earned badges mini display */}
       {earnedBadges.length>0&&(
         <div className="ai-badges">
           <p className="ai-badges-label">Your badges</p>
@@ -776,7 +744,6 @@ function AICoachCard({habits,summary,earnedBadges}) {
         </div>
       )}
 
-      {/* Next badge hint */}
       {nextBadge&&(
         <div className="ai-next-badge">
           <span>{nextBadge.icon}</span>
@@ -797,12 +764,10 @@ function BadgesTab({habits,summary,earnedBadges}) {
       <p style={{fontSize:13,color:"var(--text-2)",marginBottom:16,marginTop:4}}>
         {earnedBadges.length} of {REWARD_BADGES.length} badges earned
       </p>
-      {/* Progress bar */}
       <div style={{background:"#EEF0F5",borderRadius:20,height:8,marginBottom:24,overflow:"hidden"}}>
         <div style={{height:"100%",borderRadius:20,background:"linear-gradient(90deg,#34C77B,#4E8EF7)",width:`${Math.round(earnedBadges.length/REWARD_BADGES.length*100)}%`,transition:"width .5s ease"}}/>
       </div>
 
-      {/* Earned */}
       {earnedBadges.length>0&&<>
         <p className="section-label" style={{padding:0,marginBottom:12}}>🏆 Earned</p>
         <div className="badges-grid">
@@ -816,7 +781,6 @@ function BadgesTab({habits,summary,earnedBadges}) {
         </div>
       </>}
 
-      {/* Locked */}
       <p className="section-label" style={{padding:0,marginBottom:12,marginTop:24}}>🔒 Locked</p>
       <div className="badges-grid">
         {REWARD_BADGES.filter(b=>!earnedIds.has(b.id)).map(b=>(
@@ -897,7 +861,6 @@ function NotifBanner({ onAllow, denied }) {
 function RemindersTab({ habits, notifPerm, gcalStatus, uid, onRequestPermission, onEditHabit, onCreateGcal, onTestNotif }) {
   return (
     <div style={{padding:"0 16px"}}>
-      {/* Permission status card */}
       <div className="reminder-status-card">
         <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:8}}>
           <span style={{fontSize:28}}>{notifPerm==="granted"?"🔔":"🔕"}</span>
@@ -944,7 +907,6 @@ function RemindersTab({ habits, notifPerm, gcalStatus, uid, onRequestPermission,
   );
 }
 
-// Individual reminder card per habit
 function ReminderCard({ habit, notifPerm, gcalStatus, onEdit, onCreateGcal, onTest }) {
   const { name, icon, color, reminderEnabled, reminderTime } = habit;
   const hasReminder = reminderEnabled && reminderTime;
@@ -964,19 +926,17 @@ function ReminderCard({ habit, notifPerm, gcalStatus, onEdit, onCreateGcal, onTe
 
       {hasReminder && (
         <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-          {/* Test notification */}
           {notifPerm==="granted" && (
             <button className="reminder-action-btn notif-test-btn" onClick={onTest}>
               🔔 Test alert
             </button>
           )}
-          {/* Add to Google Calendar */}
           <button
             className={`reminder-action-btn gcal-btn${gcalStatus==="creating"?" loading":""}`}
             onClick={onCreateGcal}
             disabled={gcalStatus==="creating"}
           >
-            📅 {gcalStatus==="creating" ? "Adding…" : gcalStatus==="done" ? "Added ✅" : "Add to Google Calendar"}
+            📅 {gcalStatus==="creating" ? "Opening…" : gcalStatus==="done" ? "Added ✅" : "Add to Google Calendar"}
           </button>
         </div>
       )}
