@@ -30,7 +30,7 @@ import { db } from "./firebaseConfig";
 //    After adding Firebase Auth, change this to:
 //      import { getAuth } from "firebase/auth";
 //      const userId = getAuth().currentUser?.uid;
-export const USER_ID = "YOUR_USER_ID_HERE"; // e.g. "tam_user_001"
+export const USER_ID = "RRAUyTCZbrmoWHuWMgfB"; // e.g. "tam_user_001"
 
 // ─────────────────────────────────────────────
 // VISUAL PALETTE  (assigned to habits by index)

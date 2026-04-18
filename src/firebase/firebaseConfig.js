@@ -18,12 +18,12 @@ import { getFirestore } from "firebase/firestore";
 
 // 🔑 Replace every value below with your actual Firebase project credentials
 const firebaseConfig = {
-  apiKey: "YOUR_API_KEY", // e.g. "AIzaSy..."
-  authDomain: "habit-app-tam", // e.g. "habit-app-tam.firebaseapp.com"
-  projectId: "YOUR_PROJECT_ID", // e.g. "habit-app-tam"
-  storageBucket: "YOUR_STORAGE_BUCKET", // e.g. "habit-app-tam.appspot.com"
-  messagingSenderId: "YOUR_MESSAGING_SENDER_ID", // e.g. "123456789"
-  appId: "YOUR_APP_ID", // e.g. "1:123456789:web:abc..."
+  apiKey: "AIzaSyCcsD8hnpCD4ntSEkGJgEejD-WEqei5BEo",
+  authDomain: "habit-app-by-tam.firebaseapp.com",
+  projectId: "habit-app-by-tam",
+  storageBucket: "habit-app-by-tam.firebasestorage.app",
+  messagingSenderId: "14572483488",
+  appId: "1:14572483488:web:554382611a410eb2eeeac5"
 };
 
 // Initialize Firebase (singleton — safe to import anywhere in the app)
