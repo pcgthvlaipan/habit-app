@@ -1,0 +1,167 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --bg-primary: #0d0618;
+    --bg-secondary: #130d22;
+    --bg-card: rgba(255, 255, 255, 0.04);
+    --bg-card-hover: rgba(255, 255, 255, 0.07);
+    --border: rgba(255, 255, 255, 0.08);
+    --border-hover: rgba(139, 92, 246, 0.4);
+    --text-primary: #f5f3ff;
+    --text-secondary: #a78bfa;
+    --text-muted: #6b7280;
+    --accent: #8b5cf6;
+    --accent-light: #a78bfa;
+    --accent-glow: rgba(139, 92, 246, 0.25);
+    --success: #22c55e;
+    --warning: #f59e0b;
+    --danger: #f43f5e;
+  }
+
+  * {
+    @apply border-white/[0.08];
+  }
+
+  body {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: 'DM Sans', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  /* Safari iPhone viewport fix:
+     100vh includes the browser toolbar on iPhone Safari, clipping the bottom.
+     100dvh (dynamic viewport height) is correct on all modern browsers.     */
+  @supports (height: 100dvh) {
+    .min-h-screen { min-height: 100dvh; }
+    .h-screen     { height: 100dvh; }
+  }
+
+  /* Safe area insets: keeps content away from the iPhone notch/home bar. */
+  body {
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left:   env(safe-area-inset-left);
+    padding-right:  env(safe-area-inset-right);
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl border border-white/[0.06] bg-white/[0.03];
+    backdrop-filter: blur(12px);
+  }
+
+  .card-hover {
+    @apply card transition-all duration-200;
+    @apply hover:border-purple-500/30 hover:bg-white/[0.05];
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center gap-2 rounded-xl bg-violet-600 px-5 py-2.5 text-sm font-500 text-white;
+    @apply transition-all duration-150 hover:bg-violet-500 active:scale-[0.98];
+    @apply focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-2 focus:ring-offset-[#0d0618];
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center gap-2 rounded-xl border border-white/10 px-4 py-2 text-sm text-white/70;
+    @apply transition-all duration-150 hover:border-white/20 hover:text-white hover:bg-white/[0.05] active:scale-[0.98];
+  }
+
+  .input-field {
+    @apply w-full rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white;
+    @apply placeholder:text-white/30 outline-none;
+    @apply transition-all duration-150;
+    @apply focus:border-violet-500/60 focus:ring-2 focus:ring-violet-500/20;
+  }
+
+  .label {
+    @apply text-xs font-500 uppercase tracking-wider text-white/40;
+  }
+
+  .stat-card {
+    @apply card p-5 flex flex-col gap-2;
+  }
+
+  .habit-pill {
+    @apply rounded-lg px-2.5 py-0.5 text-xs font-500;
+  }
+
+  .section-title {
+    @apply text-[11px] font-600 uppercase tracking-[0.12em] text-white/30;
+  }
+
+  .gradient-text {
+    @apply bg-clip-text text-transparent;
+    background-image: linear-gradient(135deg, #a78bfa 0%, #7c3aed 50%, #c084fc 100%);
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(139, 92, 246, 0.2); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(139, 92, 246, 0.4); }
+}
+
+@layer utilities {
+  .font-500 { font-weight: 500; }
+  .font-600 { font-weight: 600; }
+
+  .bg-mesh {
+    background-image:
+      radial-gradient(ellipse 80% 50% at 20% 10%, rgba(139, 92, 246, 0.08) 0%, transparent 60%),
+      radial-gradient(ellipse 60% 40% at 80% 80%, rgba(124, 58, 237, 0.06) 0%, transparent 60%);
+  }
+
+  .text-gradient-purple {
+    background: linear-gradient(135deg, #c4b5fd, #7c3aed);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  .glow-purple {
+    box-shadow: 0 0 20px rgba(139, 92, 246, 0.25), 0 0 40px rgba(139, 92, 246, 0.1);
+  }
+
+  .border-glow {
+    border: 1px solid rgba(139, 92, 246, 0.3);
+    box-shadow: 0 0 0 1px rgba(139, 92, 246, 0.1) inset;
+  }
+}
+
+/* Recharts overrides */
+.recharts-tooltip-wrapper {
+  outline: none !important;
+}
+
+.recharts-default-tooltip {
+  background: rgba(13, 6, 24, 0.95) !important;
+  border: 1px solid rgba(139, 92, 246, 0.3) !important;
+  border-radius: 10px !important;
+  backdrop-filter: blur(12px) !important;
+}
+
+.recharts-tooltip-label {
+  color: rgba(245, 243, 255, 0.7) !important;
+  font-size: 12px !important;
+  margin-bottom: 4px !important;
+}
+
+.recharts-tooltip-item {
+  color: #a78bfa !important;
+  font-size: 13px !important;
+}
+
+/* Modal overlay */
+.modal-overlay {
+  background: rgba(7, 3, 15, 0.7);
+  backdrop-filter: blur(8px);
+}
