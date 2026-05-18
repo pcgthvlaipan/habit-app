@@ -1,13 +1,6 @@
-// ═══════════════════════════════════════════════════════════════
-// src/firebase/firebaseConfig.js
-//
-// 🔑 Your Firebase credentials are already filled in below.
-//    Do NOT share this file publicly.
-// ═══════════════════════════════════════════════════════════════
-
 import { initializeApp } from "firebase/app";
-import { getFirestore }  from "firebase/firestore";
-import { getAuth }       from "firebase/auth";   // ← Auth added
+import { getFirestore } from "firebase/firestore";
+import { getAuth, browserLocalPersistence, setPersistence } from "firebase/auth";
 
 const firebaseConfig = {
   apiKey:            "AIzaSyCcsD8hnpCD4ntSEkGJgEejD-WEqei5BEo",
@@ -19,6 +12,11 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-
 export const db   = getFirestore(app);
-export const auth = getAuth(app);  // ← exported for use in habitService
+export const auth = getAuth(app);
+
+// ✅ Fix blank screen on iOS Safari after login
+// iOS Safari can fail silently with default indexedDB persistence
+setPersistence(auth, browserLocalPersistence).catch(err => {
+  console.warn("Auth persistence error:", err);
+});
