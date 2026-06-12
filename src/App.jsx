@@ -228,7 +228,7 @@ function Dashboard({ authUser }) {
   const [editing,setEditing]       = useState(null);
   const [tab,setTab]               = useState("today");
   const [calHabit,setCalHabit]     = useState(null);
-  const [notifPerm,setNotifPerm]   = useState(Notification?.permission ?? "default");
+  const [notifPerm,setNotifPerm]   = useState(()=>{try{return typeof Notification!=="undefined"?Notification.permission:"unsupported"}catch(e){return "unsupported"}});
   const [gcalStatus,setGcalStatus] = useState({});
   const uid = authUser.uid;
   // Track optimistic updates — ignore Firestore re-fetch for 3 seconds after a log
