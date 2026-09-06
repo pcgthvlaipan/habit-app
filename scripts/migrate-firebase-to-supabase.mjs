@@ -2,101 +2,127 @@
 // One-time data migration: Firebase (Auth + Firestore) → Supabase
 //
 // Prereqs (see .env.example):
-//   SUPABASE_SERVICE_ROLE_KEY        Supabase → Settings → API → service_role
+//   SUPABASE_SERVICE_ROLE_KEY        Supabase → Settings → API → service_role / secret
 //   VITE_SUPABASE_URL                Supabase → Settings → API → Project URL
 //   GOOGLE_APPLICATION_CREDENTIALS   path to the Firebase service-account JSON
-//                                    (Firebase console → Project settings →
-//                                     Service accounts → Generate new private key)
 //
 // Run:  node --env-file=.env scripts/migrate-firebase-to-supabase.mjs
-//   add  --send-reset   to also email every migrated user a password-reset link
-//   add  --dry-run      to print what would happen without writing
+//   --dry-run      print what would happen, write nothing
+//   --send-reset   also email every migrated user a password-reset link
 //
-// What it does:
-//   1. reads every Firebase Auth user (email + uid)
-//   2. creates a matching Supabase auth user (email confirmed, random password)
-//   3. copies the Firestore profile (name / department / isAdmin) into `profiles`
-//   4. copies that user's habits + logs, remapping ids
-//   5. (optional) sends each user a password-reset email
-//
+// Talks to Supabase over the plain REST + Auth-admin API (service_role bypasses
+// RLS) — no supabase-js, so it runs on any Node without a WebSocket polyfill.
 // Idempotent-ish: existing Supabase users (matched by email) are reused and
 // their habits are wiped + re-inserted, so re-running is safe.
 // ═══════════════════════════════════════════════════════════════
 import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
-import { createClient } from "@supabase/supabase-js";
-
-const require = createRequire(import.meta.url);
-const admin = require("firebase-admin");
+import { initializeApp, cert } from "firebase-admin/app";
+import { getAuth } from "firebase-admin/auth";
+import { getFirestore } from "firebase-admin/firestore";
 
 const DRY  = process.argv.includes("--dry-run");
 const SEND = process.argv.includes("--send-reset");
 
-const SUPABASE_URL = process.env.VITE_SUPABASE_URL;
-const SERVICE_KEY  = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const SA_PATH      = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+const SB_URL   = process.env.VITE_SUPABASE_URL;
+const SB_KEY   = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const SA_PATH  = process.env.GOOGLE_APPLICATION_CREDENTIALS;
 
-if (!SUPABASE_URL || !SERVICE_KEY || !SA_PATH) {
+if (!SB_URL || !SB_KEY || !SA_PATH) {
   console.error("Missing env. Need VITE_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, GOOGLE_APPLICATION_CREDENTIALS.");
   process.exit(1);
 }
 
-admin.initializeApp({
-  credential: admin.credential.cert(JSON.parse(readFileSync(SA_PATH, "utf8"))),
-});
-const fs = admin.firestore();
-const fireAuth = admin.auth();
-
-const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
+initializeApp({ credential: cert(JSON.parse(readFileSync(SA_PATH, "utf8"))) });
+const fdb  = getFirestore();
+const fauth = getAuth();
 
 const WEEK_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-// Firestore Timestamp / string → "YYYY-MM-DD" (Bangkok day) + ISO timestamp.
+// ── tiny Supabase REST helpers ──────────────────────────────
+const H = {
+  apikey: SB_KEY,
+  Authorization: `Bearer ${SB_KEY}`,
+  "Content-Type": "application/json",
+};
+async function sbRest(path, { method = "GET", body, prefer } = {}) {
+  const res = await fetch(`${SB_URL}/rest/v1/${path}`, {
+    method, headers: { ...H, ...(prefer ? { Prefer: prefer } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`${method} ${path} → ${res.status} ${text}`);
+  return text ? JSON.parse(text) : null;
+}
+async function sbAuth(path, { method = "GET", body } = {}) {
+  const res = await fetch(`${SB_URL}/auth/v1/${path}`, {
+    method, headers: H, body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`auth ${method} ${path} → ${res.status} ${text}`);
+  return text ? JSON.parse(text) : null;
+}
+
+// Firestore Timestamp / string → { day: "YYYY-MM-DD" (Bangkok), stamp: ISO }.
 function toDayAndStamp(v, fallbackDocId) {
-  let d;
+  let d = null;
   if (v?.toDate) d = v.toDate();
   else if (v?._seconds != null) d = new Date(v._seconds * 1000);
+  else if (v?.seconds != null) d = new Date(v.seconds * 1000);
   else if (typeof v === "string") d = new Date(v);
-  else d = null;
   const bkk = d ? new Date(d.getTime() + 7 * 3600 * 1000) : null;
   const day = bkk
     ? `${bkk.getUTCFullYear()}-${String(bkk.getUTCMonth() + 1).padStart(2, "0")}-${String(bkk.getUTCDate()).padStart(2, "0")}`
-    : fallbackDocId; // logs were keyed by the date string
+    : (fallbackDocId && /^\d{4}-\d{2}-\d{2}$/.test(fallbackDocId) ? fallbackDocId : null);
   return { day, stamp: (d ?? new Date()).toISOString() };
 }
 
-async function findOrCreateSupabaseUser(email, meta) {
-  // Look for an existing user with this email.
-  const { data: list } = await sb.auth.admin.listUsers({ page: 1, perPage: 1000 });
-  const existing = list.users.find(u => (u.email || "").toLowerCase() === email.toLowerCase());
-  if (existing) return { id: existing.id, created: false };
+let sbUserCache = null;
+async function allSupabaseUsers() {
+  if (sbUserCache) return sbUserCache;
+  const users = [];
+  for (let page = 1; ; page++) {
+    const r = await sbAuth(`admin/users?page=${page}&per_page=1000`);
+    const batch = r.users ?? [];
+    users.push(...batch);
+    if (batch.length < 1000) break;
+  }
+  sbUserCache = users;
+  return users;
+}
 
-  const { data, error } = await sb.auth.admin.createUser({
-    email,
-    email_confirm: true,
-    password: crypto.randomUUID() + crypto.randomUUID(),
-    user_metadata: { name: meta.name ?? null, department: meta.department ?? null },
+async function findOrCreateSupabaseUser(email, meta) {
+  const existing = (await allSupabaseUsers())
+    .find(u => (u.email || "").toLowerCase() === email.toLowerCase());
+  if (existing) return existing.id;
+  const created = await sbAuth("admin/users", {
+    method: "POST",
+    body: {
+      email,
+      email_confirm: true,
+      password: crypto.randomUUID() + crypto.randomUUID(),
+      user_metadata: { name: meta.name ?? null, department: meta.department ?? null },
+    },
   });
-  if (error) throw error;
-  return { id: data.user.id, created: true };
+  sbUserCache?.push(created);
+  return created.id;
 }
 
 async function readFirestoreProfile(uid) {
-  const snap = await fs.collection("users").doc(uid).get();
+  const snap = await fdb.collection("users").doc(uid).get();
   const d = snap.exists ? snap.data() : {};
   return {
     name: d.name ?? null,
-    email: d.email ?? null,
     department: d.department ?? null,
     isAdmin: d.isAdmin === true,
   };
 }
 
-// Habits live at users/{uid}/habits OR the legacy top-level habits/{uid}/habits.
+// Habits live at users/{uid}/habits and/or the legacy top-level habits/{uid}/habits.
 async function readHabits(uid) {
   const out = [];
-  for (const base of [fs.collection("users").doc(uid), fs.collection("habits").doc(uid)]) {
-    const hs = await base.collection("habits").get().catch(() => ({ empty: true, docs: [] }));
+  for (const base of [fdb.collection("users").doc(uid), fdb.collection("habits").doc(uid)]) {
+    let hs;
+    try { hs = await base.collection("habits").get(); } catch { continue; }
     for (const h of hs.docs) {
       const hd = h.data();
       const logsSnap = await base.collection("habits").doc(h.id).collection("logs").get();
@@ -127,81 +153,81 @@ async function main() {
   console.log(`\n${DRY ? "DRY RUN — " : ""}Firebase → Supabase migration\n`);
 
   // ── departments ──
-  const deptSnap = await fs.collection("appConfig").doc("departments").get();
+  const deptSnap = await fdb.collection("appConfig").doc("departments").get();
   const deptList = deptSnap.exists ? deptSnap.data().list : null;
   if (Array.isArray(deptList) && deptList.length) {
     console.log(`departments: ${deptList.length} entries`);
     if (!DRY) {
-      await sb.from("app_config").upsert(
-        { key: "departments", value: { list: deptList }, updated_at: new Date().toISOString() },
-        { onConflict: "key" }
-      );
+      await sbRest("app_config?on_conflict=key", {
+        method: "POST",
+        prefer: "resolution=merge-duplicates",
+        body: [{ key: "departments", value: { list: deptList }, updated_at: new Date().toISOString() }],
+      });
     }
   }
 
   // ── auth users ──
-  let pageToken;
   const users = [];
+  let pageToken;
   do {
-    const res = await fireAuth.listUsers(1000, pageToken);
+    const res = await fauth.listUsers(1000, pageToken);
     users.push(...res.users);
     pageToken = res.pageToken;
   } while (pageToken);
   console.log(`firebase auth users: ${users.length}\n`);
 
-  let migrated = 0;
+  let migrated = 0, skipped = 0;
   for (const fu of users) {
-    if (!fu.email) { console.log(`  skip ${fu.uid} (no email)`); continue; }
+    if (!fu.email) { console.log(`  skip ${fu.uid} (no email)`); skipped++; continue; }
     const profile = await readFirestoreProfile(fu.uid);
     const habits  = await readHabits(fu.uid);
     const logCount = habits.reduce((s, h) => s + h.logs.length, 0);
     console.log(`  ${fu.email} — ${habits.length} habits, ${logCount} logs${profile.isAdmin ? " [admin]" : ""}`);
     if (DRY) { migrated++; continue; }
 
-    const { id: sbId } = await findOrCreateSupabaseUser(fu.email, profile);
+    const sbId = await findOrCreateSupabaseUser(fu.email, profile);
 
-    // profile (service role bypasses the is_admin column lock)
-    await sb.from("profiles").upsert({
-      id: sbId,
-      name: profile.name ?? fu.displayName ?? "Friend",
-      email: fu.email,
-      department: profile.department,
-      is_admin: profile.isAdmin,
-    }, { onConflict: "id" });
+    // profile — service_role write bypasses the is_admin column lock
+    await sbRest("profiles?on_conflict=id", {
+      method: "POST",
+      prefer: "resolution=merge-duplicates",
+      body: [{
+        id: sbId,
+        name: profile.name ?? fu.displayName ?? "Friend",
+        email: fu.email,
+        department: profile.department,
+        is_admin: profile.isAdmin,
+      }],
+    });
 
     // wipe + re-insert this user's habits (logs cascade)
-    await sb.from("habits").delete().eq("user_id", sbId);
+    await sbRest(`habits?user_id=eq.${sbId}`, { method: "DELETE" });
     for (const h of habits) {
       const { logs, ...habitRow } = h;
-      const { data: ins, error } = await sb.from("habits")
-        .insert({ ...habitRow, user_id: sbId }).select("id").single();
-      if (error) { console.log(`    ! habit "${h.name}": ${error.message}`); continue; }
-      if (logs.length) {
-        const rows = logs
-          .filter(l => l.day)
-          .map(l => ({
-            habit_id: ins.id, user_id: sbId, log_date: l.day,
-            status: l.status, partial: l.partial, logged_at: l.stamp,
-          }));
-        // de-dupe on (habit_id, log_date)
-        const seen = new Set();
-        const deduped = rows.filter(r => (seen.has(r.log_date) ? false : seen.add(r.log_date)));
-        if (deduped.length) {
-          const { error: le } = await sb.from("logs").insert(deduped);
-          if (le) console.log(`    ! logs for "${h.name}": ${le.message}`);
-        }
+      let ins;
+      try {
+        ins = await sbRest("habits", { method: "POST", prefer: "return=representation", body: [{ ...habitRow, user_id: sbId }] });
+      } catch (e) { console.log(`    ! habit "${h.name}": ${e.message}`); continue; }
+      const hid = ins[0].id;
+      const seen = new Set();
+      const rows = logs
+        .filter(l => l.day && !seen.has(l.day) && seen.add(l.day))
+        .map(l => ({ habit_id: hid, user_id: sbId, log_date: l.day, status: l.status, partial: l.partial, logged_at: l.stamp }));
+      if (rows.length) {
+        try { await sbRest("logs", { method: "POST", body: rows }); }
+        catch (e) { console.log(`    ! logs for "${h.name}": ${e.message}`); }
       }
     }
 
     if (SEND) {
-      const { error } = await sb.auth.resetPasswordForEmail(fu.email);
-      if (error) console.log(`    ! reset email: ${error.message}`);
+      try { await sbAuth("recover", { method: "POST", body: { email: fu.email } }); }
+      catch (e) { console.log(`    ! reset email: ${e.message}`); }
     }
     migrated++;
   }
 
-  console.log(`\n${DRY ? "would migrate" : "migrated"}: ${migrated} users`);
-  console.log(SEND ? "password-reset emails sent." : "run again with --send-reset to email reset links.\n");
+  console.log(`\n${DRY ? "would migrate" : "migrated"}: ${migrated} users (${skipped} skipped)`);
+  console.log(SEND ? "password-reset emails sent." : "re-run with --send-reset to email reset links.\n");
   process.exit(0);
 }
 
