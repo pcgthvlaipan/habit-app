@@ -21,8 +21,85 @@ export async function registerUser(e, p) { return createUserWithEmailAndPassword
 export async function loginUser(e, p)    { return signInWithEmailAndPassword(auth, e, p); }
 export async function logoutUser()       { return signOut(auth); }
 export function subscribeToAuth(cb)      { return onAuthStateChanged(auth, cb); }
-export async function ensureUserDoc(uid, name) {
-  await setDoc(doc(db, "users", uid), { name, createdAt: serverTimestamp() }, { merge: true });
+
+// Registration now captures name + email + department (all required — see AuthScreen).
+export async function ensureUserDoc(uid, { name, email, department }) {
+  await setDoc(
+    doc(db, "users", uid),
+    { name, email: email ?? null, department: department ?? null, createdAt: serverTimestamp() },
+    { merge: true }
+  );
+}
+
+// ─── DEPARTMENTS ─────────────────────────────────────────────
+// The list lives in a single Firestore doc (appConfig/departments → { list: [] })
+// so it can be edited in-app by admins and read on the (pre-auth) registration
+// screen. DEFAULT_DEPARTMENTS seeds the doc on first read and is the offline
+// fallback. Firestore rules must allow: public read of appConfig/departments,
+// write only when request.auth != null && the user's doc has isAdmin == true.
+export const DEFAULT_DEPARTMENTS = [
+  "WHA - Domestics Warehouse",
+  "WHA - Export Warehouse",
+  "WHA - Logistics System and Admin",
+  "WHA - Transport Department",
+  "WHA - HR Department",
+  "WHA - Projects & Safety",
+  "WHA - Raw Material WH",
+  "WH Chiangmai",
+  "WH Chiangrai",
+  "WH Phitsanulok",
+  "WH Hadyai",
+  "WH Surath",
+  "WH Khonkan",
+  "WH Korath",
+  "WH Ubon",
+  "WH Ratchburi",
+  "WH Sriracha",
+  "BKKWH Nongkam",
+  "BKKWH Saimai",
+  "BKKWH Ladprow",
+  "BKKWH Pakkret",
+  "BKKWH Wangnoi",
+];
+
+const DEPARTMENTS_REF = () => doc(db, "appConfig", "departments");
+
+// One-shot read for the registration screen. Falls back to the defaults if the
+// doc is missing or unreadable (e.g. offline) so registration is never blocked.
+export async function fetchDepartments() {
+  try {
+    const snap = await getDoc(DEPARTMENTS_REF());
+    const list = snap.exists() ? snap.data().list : null;
+    if (Array.isArray(list) && list.length) return list;
+  } catch { /* fall through to defaults */ }
+  return DEFAULT_DEPARTMENTS;
+}
+
+// Live list for the in-app admin editor.
+export function subscribeToDepartments(cb) {
+  return onSnapshot(
+    DEPARTMENTS_REF(),
+    snap => {
+      const list = snap.exists() ? snap.data().list : null;
+      cb(Array.isArray(list) && list.length ? list : DEFAULT_DEPARTMENTS);
+    },
+    () => cb(DEFAULT_DEPARTMENTS)
+  );
+}
+
+export async function addDepartment(name) {
+  const clean = name.trim();
+  if (!clean) return;
+  const current = await fetchDepartments();
+  if (current.some(d => d.toLowerCase() === clean.toLowerCase())) return;
+  const next = [...current, clean].sort((a, b) => a.localeCompare(b));
+  await setDoc(DEPARTMENTS_REF(), { list: next, updatedAt: serverTimestamp() }, { merge: true });
+}
+
+export async function removeDepartment(name) {
+  const current = await fetchDepartments();
+  const next = current.filter(d => d !== name);
+  await setDoc(DEPARTMENTS_REF(), { list: next, updatedAt: serverTimestamp() }, { merge: true });
 }
 
 // ─── 50 ICONS ────────────────────────────────────────────────
@@ -55,42 +132,86 @@ export const HABIT_ICON_OPTIONS = [
 ];
 
 // ─── REWARD BADGES ────────────────────────────────────────────
+// label/desc text lives in src/i18n.jsx under `badgeDefs.<id>` so it can be shown
+// in Thai or English. Order here == display order. The `type` groups them for the
+// "next badge" hint in the AI coach card. Points: full completion = 10, partial = 5.
+export const POINTS_FULL = 10;
+export const POINTS_PARTIAL = 5;
+
 export const REWARD_BADGES = [
-  { id: "streak3",   icon: "🔥", label: "3-Day Streak",    desc: "3 days in a row!",       type: "streak",  threshold: 3 },
-  { id: "streak7",   icon: "⚡", label: "Week Warrior",     desc: "7 days streak!",          type: "streak",  threshold: 7 },
-  { id: "streak14",  icon: "💎", label: "2-Week Champion",  desc: "14 days streak!",         type: "streak",  threshold: 14 },
-  { id: "streak30",  icon: "👑", label: "Monthly Legend",   desc: "30 days streak!",         type: "streak",  threshold: 30 },
-  { id: "streak100", icon: "🏆", label: "Century Club",     desc: "100 days streak!",        type: "streak",  threshold: 100 },
-  { id: "done10",    icon: "⭐", label: "First 10",         desc: "Completed 10 habits",     type: "total",   threshold: 10 },
-  { id: "done50",    icon: "🌟", label: "50 Done!",         desc: "Completed 50 habits",     type: "total",   threshold: 50 },
-  { id: "done100",   icon: "💫", label: "Century Done",     desc: "100 habits completed",    type: "total",   threshold: 100 },
-  { id: "rate80",    icon: "🎯", label: "Sharp Shooter",    desc: "80%+ success rate",       type: "rate",    threshold: 80 },
-  { id: "rate100",   icon: "✨", label: "Perfect Week",     desc: "100% success this week",  type: "rate",    threshold: 100 },
-  { id: "habit3",    icon: "🌈", label: "Habit Collector",  desc: "Tracking 3+ habits",      type: "habits",  threshold: 3 },
-  { id: "habit5",    icon: "🦋", label: "Habit Master",     desc: "Tracking 5+ habits",      type: "habits",  threshold: 5 },
-  { id: "comeback",  icon: "💪", label: "Comeback Kid",     desc: "Back after a miss!",      type: "special" },
-  { id: "morning",   icon: "🌅", label: "Early Bird",       desc: "Logged before 8am",       type: "special" },
-  { id: "allday",    icon: "🌙", label: "Full Day",         desc: "All habits done today",   type: "special" },
+  // ── small wins — the everyday motivation tier ──
+  { id: "firststep",  icon: "🌱", type: "milestone", threshold: 1 },   // first ever log
+  { id: "smallwins",  icon: "🪜", type: "milestone", threshold: 5 },   // 5 logs of any kind
+  { id: "partialhero",icon: "◑",  type: "partial",   threshold: 3 },   // 3 partial completions
+  { id: "points100",  icon: "⚡", type: "points",    threshold: 100 },
+  { id: "points500",  icon: "💠", type: "points",    threshold: 500 },
+  { id: "perfectweek",icon: "✨", type: "week" },                       // every scheduled check-in this week
+  // ── streaks ──
+  { id: "streak3",   icon: "🔥", type: "streak", threshold: 3 },
+  { id: "streak7",   icon: "⭐", type: "streak", threshold: 7 },
+  { id: "streak14",  icon: "💎", type: "streak", threshold: 14 },
+  { id: "streak30",  icon: "👑", type: "streak", threshold: 30 },
+  { id: "streak100", icon: "🏆", type: "streak", threshold: 100 },
+  // ── totals & consistency ──
+  { id: "done10",    icon: "✅", type: "total",  threshold: 10 },
+  { id: "done50",    icon: "🌟", type: "total",  threshold: 50 },
+  { id: "done100",   icon: "💫", type: "total",  threshold: 100 },
+  { id: "rate80",    icon: "🎯", type: "rate",   threshold: 80 },
+  { id: "habit3",    icon: "🌈", type: "habits", threshold: 3 },
+  { id: "habit5",    icon: "🦋", type: "habits", threshold: 5 },
+  // ── special ──
+  { id: "comeback",  icon: "💪", type: "special" },
+  { id: "earlybird", icon: "🌅", type: "special" },
+  { id: "allday",    icon: "🌙", type: "special" },
 ];
 
 export function computeEarnedBadges(habits, summary) {
-  const earned       = [];
-  const maxStreak    = habits.reduce((m, h) => Math.max(m, h.streak), 0);
-  const totalDoneAll = habits.reduce((s, h) => s + (h.totalDone ?? 0), 0);
-  const avgRate      = summary?.successRate ?? 0;
-  const habitCount   = habits.length;
-  const allDoneToday = habits.length > 0 &&
+  const earned         = [];
+  const maxStreak      = habits.reduce((m, h) => Math.max(m, h.streak ?? 0), 0);
+  const totalDoneAll   = habits.reduce((s, h) => s + (h.totalDone ?? 0), 0);
+  const totalLoggedAll = habits.reduce((s, h) => s + (h.totalLogged ?? 0), 0);
+  const partialCntAll  = habits.reduce((s, h) => s + (h.partialCount ?? 0), 0);
+  const totalPoints    = summary?.totalPoints ?? 0;
+  const avgRate        = summary?.successRate ?? 0;
+  const habitCount     = habits.length;
+  const weeklyComplete = summary?.weeklyComplete ?? false;
+  const hasEarly       = habits.some(h => h.hasEarlyLog);
+  const hasComeback    = habits.some(h => h.hasComeback);
+  const allDoneToday   = habits.length > 0 &&
     habits.every(h => h.todayStatus === "done" || h.todayStatus === "not-scheduled");
+
   for (const badge of REWARD_BADGES) {
     let earn = false;
-    if (badge.type === "streak"  && maxStreak    >= badge.threshold) earn = true;
-    if (badge.type === "total"   && totalDoneAll >= badge.threshold) earn = true;
-    if (badge.type === "rate"    && avgRate       >= badge.threshold) earn = true;
-    if (badge.type === "habits"  && habitCount    >= badge.threshold) earn = true;
-    if (badge.id   === "allday"  && allDoneToday)                     earn = true;
+    if (badge.type === "milestone" && totalLoggedAll >= badge.threshold) earn = true;
+    if (badge.type === "partial"   && partialCntAll  >= badge.threshold) earn = true;
+    if (badge.type === "points"    && totalPoints    >= badge.threshold) earn = true;
+    if (badge.type === "streak"    && maxStreak      >= badge.threshold) earn = true;
+    if (badge.type === "total"     && totalDoneAll   >= badge.threshold) earn = true;
+    if (badge.type === "rate"      && avgRate        >= badge.threshold) earn = true;
+    if (badge.type === "habits"    && habitCount     >= badge.threshold) earn = true;
+    if (badge.type === "week"      && weeklyComplete)                    earn = true;
+    if (badge.id   === "earlybird" && hasEarly)                          earn = true;
+    if (badge.id   === "comeback"  && hasComeback)                       earn = true;
+    if (badge.id   === "allday"    && allDoneToday)                      earn = true;
     if (earn) earned.push(badge);
   }
   return earned;
+}
+
+// Progress (0..1) toward a not-yet-earned badge, for the "next badge" progress bar.
+export function badgeProgress(badge, habits, summary) {
+  const val =
+    badge.type === "milestone" ? habits.reduce((s, h) => s + (h.totalLogged ?? 0), 0) :
+    badge.type === "partial"   ? habits.reduce((s, h) => s + (h.partialCount ?? 0), 0) :
+    badge.type === "points"    ? (summary?.totalPoints ?? 0) :
+    badge.type === "streak"    ? habits.reduce((m, h) => Math.max(m, h.streak ?? 0), 0) :
+    badge.type === "total"     ? habits.reduce((s, h) => s + (h.totalDone ?? 0), 0) :
+    badge.type === "rate"      ? (summary?.successRate ?? 0) :
+    badge.type === "habits"    ? habits.length :
+    badge.type === "week"      ? (summary?.weeklyScheduled ? (summary.weeklyDone / summary.weeklyScheduled) * 100 : 0) :
+    0;
+  const target = badge.threshold ?? (badge.type === "week" ? 100 : 1);
+  return { current: Math.min(val, target), target, ratio: target ? Math.min(1, val / target) : 0 };
 }
 
 // ─── DATE HELPERS (Bangkok UTC+7, app-wide single basis) ──────
@@ -246,6 +367,8 @@ function computeHabitStats(logs, habit) {
   const monOff = (dow + 6) % 7;
   const mon    = new Date(today);
   mon.setDate(today.getDate() - monOff);
+  let weekScheduled = 0;
+  let weekDone      = 0;
   const weeklyDays = WEEK_DAYS.map((label, i) => {
     const d     = new Date(mon);
     d.setDate(mon.getDate() + i);
@@ -253,10 +376,40 @@ function computeHabitStats(logs, habit) {
     const sched = habit.frequency === "daily" || scheduled.includes(label);
     const status  = logMap.get(key) ?? (sched ? "none" : "not-scheduled");
     const partial = partialMap.get(key) ?? null;
+    // Weekly-consistency reward: count scheduled days up to today only, and treat
+    // a full done OR a partial as "done for the week" (small wins still count).
+    if (sched && key <= todayKey) {
+      weekScheduled++;
+      if (status === "done") weekDone++;
+    }
     // status stays raw "done" here; the WeeklySummary component detects partials
     // via the `partial` object (partial.pct < 100).
     return { day: label, done: status === "done", scheduled: sched, partial };
   });
+
+  // ── Small-win signals ──
+  // Points: every full completion is worth POINTS_FULL, every partial POINTS_PARTIAL.
+  const points = logs.reduce((s, l) => {
+    if (isFullDone(l.status, l.partial)) return s + POINTS_FULL;
+    if (l.status === "done") return s + POINTS_PARTIAL;
+    return s;
+  }, 0);
+  const partialCount = logs.filter(
+    l => l.status === "done" && l.partial && (l.partial.pct ?? 100) < 100
+  ).length;
+  // Early bird: a completion logged before 08:00 Bangkok time.
+  const hasEarlyLog = logs.some(l => {
+    if (l.status !== "done") return false;
+    return bangkokDate(toDate(l.date)).getUTCHours() < 8;
+  });
+  // Comeback: a "missed" day followed later by any completion.
+  const chronological = [...logs].sort((a, b) => toDate(a.date) - toDate(b.date));
+  let sawMiss = false;
+  let hasComeback = false;
+  for (const l of chronological) {
+    if (l.status === "missed") sawMiss = true;
+    else if (sawMiss && l.status === "done") { hasComeback = true; break; }
+  }
 
   return {
     todayStatus, todayPartial, streak, successRate,
@@ -265,6 +418,7 @@ function computeHabitStats(logs, habit) {
     weeklyDays, buildChart, buildCalendar,
     // totalDone = count of FULL completions; successRate already blends in partials at 0.5.
     totalDone: fullDoneLogs, totalLogged: scheduledLogs.length, logMap,
+    points, partialCount, weekScheduled, weekDone, hasEarlyLog, hasComeback,
   };
 }
 
@@ -272,11 +426,20 @@ function computeHabitStats(logs, habit) {
 export async function fetchUser(uid) {
   const snap = await getDoc(doc(db, "users", uid));
   if (!snap.exists()) {
-    await setDoc(doc(db, "users", uid), { name: "Tam", createdAt: serverTimestamp() }, { merge: true });
-    return { name: "Tam", avatarInitial: "T" };
+    // Don't write here — ensureUserDoc (called at registration) is the single
+    // writer of the profile doc. Writing a placeholder from here can race with
+    // ensureUserDoc and clobber the real name/email/department.
+    return { name: "Friend", avatarInitial: "F", email: null, department: null, isAdmin: false };
   }
   const d = snap.data();
-  return { name: d.name ?? "Friend", avatarInitial: (d.name ?? "F")[0].toUpperCase() };
+  const name = d.name ?? "Friend";
+  return {
+    name,
+    avatarInitial: name[0].toUpperCase(),
+    email: d.email ?? null,
+    department: d.department ?? null,
+    isAdmin: d.isAdmin === true,
+  };
 }
 
 export function subscribeToHabits(userId, onUpdate, onError) {
@@ -367,7 +530,17 @@ export function computeSummary(habits) {
   const w             = habits.filter(h => h._rawLogs.length > 0);
   const successRate   = w.length > 0
     ? Math.round(w.reduce((s, h) => s + h.successRate, 0) / w.length) : 0;
-  return { totalHabits, doneToday, currentStreak, successRate };
+
+  // ── Rewards: points + weekly consistency ──
+  const totalPoints     = habits.reduce((s, h) => s + (h.points ?? 0), 0);
+  const weeklyScheduled = habits.reduce((s, h) => s + (h.weekScheduled ?? 0), 0);
+  const weeklyDone      = habits.reduce((s, h) => s + (h.weekDone ?? 0), 0);
+  const weeklyComplete  = weeklyScheduled > 0 && weeklyDone >= weeklyScheduled;
+
+  return {
+    totalHabits, doneToday, currentStreak, successRate,
+    totalPoints, weeklyScheduled, weeklyDone, weeklyComplete,
+  };
 }
 
 // ─── WRITES ───────────────────────────────────────────────────

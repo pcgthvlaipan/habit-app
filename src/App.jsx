@@ -1,6 +1,13 @@
 // ═══════════════════════════════════════════════════════════════
-// App.jsx — Habit App by Tam  v8
-// New in v8: Calendar + stats show partial completion visually
+// App.jsx — Habit App by Tam  v9
+// New in v9:
+//   • EN/TH language toggle (default Thai) — see src/i18n.jsx
+//   • Registration captures name + email + department (dropdown)
+//   • Admin-managed department list (Settings tab)
+//   • Today screen: removed "This Week" + per-habit progress chart,
+//     replaced with a Rewards card (points, weekly goal, next badge)
+//   • Small-win rewards: points on every check-in + weekly consistency
+//   • Calendar always reads the live habit (check-ins stay in sync)
 // ═══════════════════════════════════════════════════════════════
 import { useState, useEffect, useMemo } from "react";
 import "./App.css";
@@ -10,11 +17,16 @@ import {
   subscribeToHabits, computeSummary,
   logHabitToday, logHabitDate, addHabit, editHabit, deleteHabit,
   HABIT_ICON_OPTIONS, WEEK_DAYS,
-  REWARD_BADGES, computeEarnedBadges,
+  REWARD_BADGES, computeEarnedBadges, badgeProgress,
+  POINTS_FULL, POINTS_PARTIAL,
+  DEFAULT_DEPARTMENTS, fetchDepartments, subscribeToDepartments,
+  addDepartment, removeDepartment,
   bangkokKey,
   auth,  // ← we need this for sendPasswordResetEmail
 } from "./firebase/habitService";
 import { sendPasswordResetEmail } from "firebase/auth";
+import { useT } from "./i18n";
+import { badgeText, LANGS, MONTH_NAMES, WEEKDAY_LABELS } from "./i18n-util";
 import {
   requestNotificationPermission,
   showTestNotification,
@@ -25,9 +37,43 @@ import {
   openGoogleCalendar,
 } from "./reminderService";
 
-function getGreeting() {
+function greetingKey() {
   const h = new Date().getHours();
-  return h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
+  return h < 12 ? "header.morning" : h < 17 ? "header.afternoon" : "header.evening";
+}
+
+function localizeDays(days, lang) {
+  if (!Array.isArray(days)) return "";
+  const sep = lang === "th" ? " " : ", ";
+  return days.map(d => WEEKDAY_LABELS[lang]?.[d] ?? d).join(sep);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// LANGUAGE TOGGLE
+// ═══════════════════════════════════════════════════════════════
+function LangToggle({ dark = true }) {
+  const { lang, setLang } = useT();
+  return (
+    <div style={{
+      display: "inline-flex", borderRadius: 999, padding: 2, gap: 2,
+      background: dark ? "rgba(255,255,255,.18)" : "#EEF0F5",
+    }}>
+      {LANGS.map(l => {
+        const active = lang === l.code;
+        return (
+          <button key={l.code} onClick={() => setLang(l.code)}
+            style={{
+              border: "none", cursor: "pointer", borderRadius: 999, padding: "3px 10px",
+              fontSize: 11, fontWeight: 800, letterSpacing: 0.5, transition: "all .15s",
+              background: active ? "#fff" : "transparent",
+              color: active ? "#1a1a2e" : (dark ? "#fff" : "var(--text-2)"),
+            }}>
+            {l.label}
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -47,13 +93,16 @@ export default function App() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// AUTH  (v7: added Forgot Password flow)
+// AUTH  (v9: register now captures email + department)
 // ═══════════════════════════════════════════════════════════════
 function AuthScreen() {
+  const { t } = useT();
   const [mode, setMode]       = useState("login");
   const [email, setEmail]     = useState("");
   const [pass, setPass]       = useState("");
   const [name, setName]       = useState("");
+  const [department, setDept] = useState("");
+  const [depts, setDepts]     = useState(DEFAULT_DEPARTMENTS);
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState("");
   const [show, setShow]       = useState(false);
@@ -62,28 +111,39 @@ function AuthScreen() {
   const [forgotMode, setForgotMode] = useState(false);
   const [forgotSent, setForgotSent] = useState(false);
 
+  // Load the (admin-managed) department list. Falls back to DEFAULT_DEPARTMENTS
+  // if the config doc is missing or unreadable pre-auth.
+  useEffect(() => { fetchDepartments().then(setDepts).catch(() => {}); }, []);
+
   function clearError() { setError(""); }
 
   // ── Sign in / Register ──────────────────────────────────────
   async function submit() {
     clearError();
-    if (!email.trim() || !pass) { setError("Please fill in all fields."); return; }
-    if (mode === "register" && !name.trim()) { setError("Please enter your name."); return; }
-    if (pass.length < 6) { setError("Password must be at least 6 characters."); return; }
+    if (!email.trim() || !pass) { setError(t("auth.errFillAll")); return; }
+    if (mode === "register") {
+      if (!name.trim())   { setError(t("auth.errEnterName")); return; }
+      if (!department)    { setError(t("auth.errEnterDept")); return; }
+    }
+    if (pass.length < 6) { setError(t("auth.errPassLen")); return; }
     setLoading(true);
     try {
       if (mode === "login") {
         await loginUser(email.trim(), pass);
       } else {
         const c = await registerUser(email.trim(), pass);
-        await ensureUserDoc(c.user.uid, name.trim());
+        await ensureUserDoc(c.user.uid, {
+          name: name.trim(),
+          email: email.trim(),
+          department,
+        });
       }
     } catch (e) {
       setError(
-        e.code === "auth/user-not-found"      ? "No account found." :
-        e.code === "auth/wrong-password"      ? "Incorrect password." :
-        e.code === "auth/email-already-in-use"? "Email already registered." :
-        e.code === "auth/invalid-credential"  ? "Incorrect email or password." :
+        e.code === "auth/user-not-found"      ? t("auth.errNoAccount") :
+        e.code === "auth/wrong-password"      ? t("auth.errWrongPass") :
+        e.code === "auth/email-already-in-use"? t("auth.errEmailInUse") :
+        e.code === "auth/invalid-credential"  ? t("auth.errInvalidCred") :
         e.message
       );
     } finally { setLoading(false); }
@@ -92,15 +152,15 @@ function AuthScreen() {
   // ── Forgot password ─────────────────────────────────────────
   async function submitForgot() {
     clearError();
-    if (!email.trim()) { setError("Please enter your email address."); return; }
+    if (!email.trim()) { setError(t("auth.errEnterEmail")); return; }
     setLoading(true);
     try {
       await sendPasswordResetEmail(auth, email.trim());
       setForgotSent(true);
     } catch (e) {
       setError(
-        e.code === "auth/user-not-found"  ? "No account found with this email." :
-        e.code === "auth/invalid-email"   ? "Please enter a valid email address." :
+        e.code === "auth/user-not-found"  ? t("auth.errNoAccountEmail") :
+        e.code === "auth/invalid-email"   ? t("auth.errInvalidEmail") :
         e.message
       );
     } finally { setLoading(false); }
@@ -113,9 +173,10 @@ function AuthScreen() {
     <div className="shell"><div className="phone">
       <div className="auth-hero">
         <div className="auth-hero-orb orb1"/><div className="auth-hero-orb orb2"/>
+        <div style={{position:"absolute",top:14,right:14,zIndex:2}}><LangToggle/></div>
         <div className="auth-logo">h</div>
-        <p className="auth-app-name">Habit App</p>
-        <p className="auth-tagline">Build better habits, one day at a time ✦</p>
+        <p className="auth-app-name">{t("auth.appName")}</p>
+        <p className="auth-tagline">{t("auth.tagline")}</p>
       </div>
 
       <div className="auth-card">
@@ -123,62 +184,69 @@ function AuthScreen() {
         {/* ── Forgot password ── */}
         {forgotMode ? (
           <>
-            <p className="auth-title">{forgotSent ? "📧 Check your email" : "Reset password"}</p>
+            <p className="auth-title">{forgotSent ? t("auth.resetSentTitle") : t("auth.resetTitle")}</p>
             <p className="auth-sub">
-              {forgotSent
-                ? `We sent a reset link to ${email}`
-                : "Enter your email to receive a reset link"}
+              {forgotSent ? t("auth.resetSentSub", { email }) : t("auth.resetSub")}
             </p>
 
             {forgotSent ? (
               <div style={{textAlign:"center",padding:"8px 0 16px"}}>
                 <p style={{fontSize:13,color:"var(--text-2)",lineHeight:1.6,marginBottom:16}}>
-                  Click the link in the email to set a new password.
-                  Check your spam folder if you don&apos;t see it.
+                  {t("auth.resetHint")}
                 </p>
-                <button className="submit-btn" onClick={goToSignIn}>← Back to sign in</button>
+                <button className="submit-btn" onClick={goToSignIn}>{t("auth.backToSignIn")}</button>
               </div>
             ) : (
               <>
                 {error && <p className="auth-error">⚠️ {error}</p>}
                 <div className="field-wrap">
-                  <label className="field-label">Email</label>
-                  <input className="field-input" type="email" placeholder="your@email.com"
+                  <label className="field-label">{t("auth.email")}</label>
+                  <input className="field-input" type="email" placeholder={t("auth.emailPlaceholder")}
                     value={email} onChange={e => setEmail(e.target.value)}
                     autoCapitalize="none" autoFocus />
                 </div>
                 <button className="submit-btn" onClick={submitForgot} disabled={loading}>
-                  {loading ? "Sending…" : "Send reset link 📧"}
+                  {loading ? t("auth.sending") : t("auth.sendResetLink")}
                 </button>
-                <button className="cancel-btn" onClick={goToSignIn}>← Back to sign in</button>
+                <button className="cancel-btn" onClick={goToSignIn}>{t("auth.backToSignIn")}</button>
               </>
             )}
           </>
         ) : (
           /* ── Sign in / Register ── */
           <>
-            <p className="auth-title">{mode === "login" ? "Welcome back 👋" : "Create account ✦"}</p>
-            <p className="auth-sub">{mode === "login" ? "Sign in to your habits" : "Start your journey today"}</p>
+            <p className="auth-title">{mode === "login" ? t("auth.welcomeBack") : t("auth.createAccount")}</p>
+            <p className="auth-sub">{mode === "login" ? t("auth.signInSub") : t("auth.registerSub")}</p>
 
             {mode === "register" && (
-              <div className="field-wrap">
-                <label className="field-label">Name</label>
-                <input className="field-input" type="text" placeholder="e.g. Tam"
-                  value={name} onChange={e => setName(e.target.value)} maxLength={40}/>
-              </div>
+              <>
+                <div className="field-wrap">
+                  <label className="field-label">{t("auth.name")}</label>
+                  <input className="field-input" type="text" placeholder={t("auth.namePlaceholder")}
+                    value={name} onChange={e => setName(e.target.value)} maxLength={40}/>
+                </div>
+                <div className="field-wrap">
+                  <label className="field-label">{t("auth.department")}</label>
+                  <select className="field-input" value={department}
+                    onChange={e => setDept(e.target.value)}>
+                    <option value="">{t("auth.departmentPlaceholder")}</option>
+                    {depts.map(d => <option key={d} value={d}>{d}</option>)}
+                  </select>
+                </div>
+              </>
             )}
 
             <div className="field-wrap">
-              <label className="field-label">Email</label>
-              <input className="field-input" type="email" placeholder="your@email.com"
+              <label className="field-label">{t("auth.email")}</label>
+              <input className="field-input" type="email" placeholder={t("auth.emailPlaceholder")}
                 value={email} onChange={e => setEmail(e.target.value)} autoCapitalize="none"/>
             </div>
 
             <div className="field-wrap">
-              <label className="field-label">Password</label>
+              <label className="field-label">{t("auth.password")}</label>
               <div className="pass-wrap">
                 <input className="field-input pass-input" type={show ? "text" : "password"}
-                  placeholder="Min 6 characters" value={pass}
+                  placeholder={t("auth.passwordPlaceholder")} value={pass}
                   onChange={e => setPass(e.target.value)}
                   onKeyDown={e => e.key === "Enter" && submit()}/>
                 <button className="pass-toggle" onClick={() => setShow(s => !s)} tabIndex={-1}>
@@ -194,28 +262,28 @@ function AuthScreen() {
               <p style={{textAlign:"right",marginTop:-4,marginBottom:8}}>
                 <button className="auth-link" style={{fontSize:12,color:"var(--text-2)"}}
                   onClick={goToForgot}>
-                  Forgot password?
+                  {t("auth.forgotPassword")}
                 </button>
               </p>
             )}
 
             <button className="submit-btn" onClick={submit} disabled={loading}>
               {loading
-                ? (mode === "login" ? "Signing in…" : "Creating…")
-                : (mode === "login" ? "Sign In →" : "Create Account →")}
+                ? (mode === "login" ? t("auth.signingIn") : t("auth.creating"))
+                : (mode === "login" ? t("auth.signIn") : t("auth.createBtn"))}
             </button>
 
             <p className="auth-switch">
-              {mode === "login" ? "No account? " : "Have an account? "}
+              {mode === "login" ? t("auth.noAccount") : t("auth.haveAccount")}
               <button className="auth-link" onClick={() => { setMode(m => m === "login" ? "register" : "login"); clearError(); }}>
-                {mode === "login" ? "Register" : "Sign In"}
+                {mode === "login" ? t("auth.registerLink") : t("auth.signInLink")}
               </button>
             </p>
           </>
         )}
       </div>
 
-      <p className="auth-footer">🔒 Your data is private and secure</p>
+      <p className="auth-footer">{t("auth.footerSecure")}</p>
     </div></div>
   );
 }
@@ -224,27 +292,26 @@ function AuthScreen() {
 // DASHBOARD
 // ═══════════════════════════════════════════════════════════════
 function Dashboard({ authUser }) {
+  const { t } = useT();
   const [user,setUser]             = useState(null);
   const [habits,setHabits]         = useState([]);
   const [summary,setSummary]       = useState(null);
   const [selected,setSelected]     = useState(null);
-  const [period,setPeriod]         = useState("7");
   const [loading,setLoading]       = useState(true);
   const [error,setError]           = useState(null);
   const [showAdd,setShowAdd]       = useState(false);
   const [editing,setEditing]       = useState(null);
   const [tab,setTab]               = useState("today");
-  const [calHabit,setCalHabit]     = useState(null);
+  const [calHabitId,setCalHabitId] = useState(null);
+  const [winToast,setWinToast]     = useState(null);
   const [notifPerm,setNotifPerm]   = useState(()=>{try{return typeof Notification!=="undefined"?Notification.permission:"unsupported"}catch(e){return "unsupported"}});
   const [gcalStatus,setGcalStatus] = useState({});
   const uid = authUser.uid;
 
   useEffect(() => { fetchUser(uid).then(setUser).catch(e=>setError(e.message)); },[uid]);
-  // subscribeToHabits now listens on each habit's `logs` subcollection too, so log
-  // writes propagate here (with Firestore latency compensation applying our own
-  // writes almost immediately). The fragile "keep optimistic _rawLogs if longer"
-  // guard is gone — `fresh` is always the source of truth. handleLog still does an
-  // optimistic setHabits for instant tap feedback in the gap before the listener fires.
+  // subscribeToHabits listens on each habit's `logs` subcollection too, so log
+  // writes propagate here. handleLog still does an optimistic setHabits for
+  // instant tap feedback in the gap before the listener fires.
   useEffect(() => subscribeToHabits(uid,
     fresh => {
       setHabits(fresh);
@@ -273,8 +340,9 @@ function Dashboard({ authUser }) {
   }, [reminderSig]);
 
   const earnedBadges = useMemo(() => computeEarnedBadges(habits, summary), [habits, summary]);
+  const isAdmin = user?.isAdmin === true;
 
-  // ── v7: handleLog now supports partial completion ────────────
+  // ── handleLog: partial completion + small-win reward toast ───
   function handleLog(hid, status, partial) {
     const now = new Date();
     const todayKey = bangkokKey(now);
@@ -287,7 +355,6 @@ function Dashboard({ authUser }) {
 
       // Update _rawLogs immediately so calendar + stats reflect the change
       let newRawLogs = (h._rawLogs ?? []).filter(l => {
-        // Remove old log for today if exists
         const ld = l.date?.toDate
           ? l.date.toDate()
           : new Date(l.date?.seconds != null ? l.date.seconds * 1000 : l.date);
@@ -319,6 +386,11 @@ function Dashboard({ authUser }) {
       return { ...prev, doneToday: Math.max(0, prev.doneToday + delta) };
     });
 
+    // Small-win reward: celebrate every check-in (full or partial).
+    if (status === "done") {
+      setWinToast({ partial: isPartial, points: isPartial ? POINTS_PARTIAL : POINTS_FULL, ts: Date.now() });
+    }
+
     logHabitToday(uid, hid, status, partial)
       .catch(e => console.error("Save failed:", e.message));
   }
@@ -341,7 +413,7 @@ function Dashboard({ authUser }) {
   }
 
   async function handleDelete(hid) {
-    if (!window.confirm("Delete this habit and all its data?")) return;
+    if (!window.confirm(t("form.deleteConfirm"))) return;
     try {
       cancelNotification(hid);
       await deleteHabit(uid, hid);
@@ -368,27 +440,20 @@ function Dashboard({ authUser }) {
     }
   }
 
-  // Always derive selected from latest habits array for instant updates
-  const selectedHabit = selected ? (habits.find(h => h.id === selected.id) ?? selected) : null;
-
-  // subscribeToHabits now delivers live log updates, so the stats computed by
-  // computeHabitStats (single Bangkok date basis) are always fresh — no need to
-  // re-derive chart/weekly data here with a second, drift-prone timezone impl.
-  const chartData = period === "7"
-    ? (selectedHabit?.chartData7d ?? [])
-    : (selectedHabit?.chartData30d ?? []);
-  const weeklyDays = selectedHabit?.weeklyDays ?? [];
+  // Always derive from the latest habits array so check-ins made on the Today
+  // screen are instantly reflected in Stats and the Calendar (same source of truth).
+  const calHabit = calHabitId ? (habits.find(h => h.id === calHabitId) ?? null) : null;
 
   if (loading) return <Spinner/>;
   if (error)   return <div className="status-screen"><p style={{fontSize:36}}>⚠️</p><p className="status-msg">{error}</p></div>;
 
   return (
     <div className="shell"><div className="phone">
-      <Header user={user??{name:authUser.email?.split("@")[0]??"Tam",avatarInitial:"T"}} onLogout={logoutUser} earnedCount={earnedBadges.length}/>
+      <Header user={user??{name:authUser.email?.split("@")[0]??"Friend",avatarInitial:"F"}} onLogout={logoutUser} earnedCount={earnedBadges.length}/>
 
       <div className="tab-bar">
-        {[["today","🏠"],["calendar","📅"],["stats","📊"],["reminders","⏰"],["badges","🏆"]].map(([t,l])=>(
-          <button key={t} className={`tab-btn${tab===t?" tab-btn--active":""}`} onClick={()=>setTab(t)}>{l}</button>
+        {[["today","🏠"],["calendar","📅"],["stats","📊"],["reminders","⏰"],["badges","🏆"],["settings","⚙️"]].map(([tb,l])=>(
+          <button key={tb} className={`tab-btn${tab===tb?" tab-btn--active":""}`} onClick={()=>setTab(tb)}>{l}</button>
         ))}
       </div>
 
@@ -398,32 +463,31 @@ function Dashboard({ authUser }) {
         )}
         {summary&&<SummaryCards data={summary}/>}
         {earnedBadges.length>0&&<NewBadgeAlert badges={earnedBadges.slice(-1)}/>}
-        <p className="section-label anim-2">My Habits</p>
+        <p className="section-label anim-2">{t("today.myHabits")}</p>
         <HabitList habits={habits} selectedId={selected?.id}
           onSelect={setSelected} onLog={handleLog}
           onEdit={h=>setEditing(h)} onDelete={handleDelete}/>
-        {selectedHabit&&<ProgressChart habit={selectedHabit} chartData={chartData} period={period} onPeriodChange={setPeriod}/>}
-        {weeklyDays?.length>0&&<WeeklySummary days={weeklyDays}/>}
+        {habits.length>0&&<RewardsCard summary={summary} habits={habits} earnedBadges={earnedBadges}/>}
         <AICoachCard summary={summary} earnedBadges={earnedBadges}/>
       </>}
 
       {tab==="calendar"&&<>
-        <p className="section-label" style={{marginTop:16}}>History Calendar</p>
+        <p className="section-label" style={{marginTop:16}}>{t("calendar.history")}</p>
         <div className="cal-habit-picker">
           {habits.map(h=>(
-            <button key={h.id} className={`cal-habit-chip${calHabit?.id===h.id?" active":""}`}
-              style={calHabit?.id===h.id?{background:h.color,color:"#fff"}:{}}
-              onClick={()=>setCalHabit(h)}>{h.icon} {h.name}</button>
+            <button key={h.id} className={`cal-habit-chip${calHabitId===h.id?" active":""}`}
+              style={calHabitId===h.id?{background:h.color,color:"#fff"}:{}}
+              onClick={()=>setCalHabitId(h.id)}>{h.icon} {h.name}</button>
           ))}
         </div>
         {calHabit
           ? <CalendarView habit={calHabit} uid={uid}/>
-          : <div className="cal-empty">👆 Select a habit above to view its history</div>
+          : <div className="cal-empty">{t("calendar.selectHint")}</div>
         }
       </>}
 
       {tab==="stats"&&<>
-        <p className="section-label" style={{marginTop:16}}>Statistics</p>
+        <p className="section-label" style={{marginTop:16}}>{t("stats.title")}</p>
         {habits.length===0?<EmptyHabits/>:habits.map(h=><HabitStatCard key={h.id} habit={h}/>)}
       </>}
 
@@ -437,10 +501,13 @@ function Dashboard({ authUser }) {
 
       {tab==="badges"&&<BadgesTab earnedBadges={earnedBadges}/>}
 
+      {tab==="settings"&&<SettingsTab user={user} authUser={authUser} isAdmin={isAdmin}/>}
+
       <div style={{height:100}}/>
       <button className="fab" onClick={()=>setShowAdd(true)} title="Add habit"><span className="fab-icon">+</span></button>
-      {showAdd&&<HabitFormModal title="New Habit" onSave={handleAddHabit} onClose={()=>setShowAdd(false)}/>}
-      {editing&&<HabitFormModal title="Edit Habit" initial={editing} onSave={handleEditHabit} onClose={()=>setEditing(null)}/>}
+      {showAdd&&<HabitFormModal title={t("form.newHabit")} onSave={handleAddHabit} onClose={()=>setShowAdd(false)}/>}
+      {editing&&<HabitFormModal title={t("form.editHabit")} initial={editing} onSave={handleEditHabit} onClose={()=>setEditing(null)}/>}
+      {winToast&&<WinToast data={winToast} onDone={()=>setWinToast(null)}/>}
     </div></div>
   );
 }
@@ -449,21 +516,23 @@ function Dashboard({ authUser }) {
 // HEADER
 // ═══════════════════════════════════════════════════════════════
 function Header({ user, onLogout, earnedCount }) {
+  const { t } = useT();
   return (
     <div className="header anim-1">
       <div className="header-orb h-orb1"/><div className="header-orb h-orb2"/>
       <div style={{flex:1,minWidth:0,position:"relative",zIndex:1}}>
-        <div className="header-badge"><div className="header-dot"/><span className="header-badge-text">Active today</span></div>
-        <p className="header-greeting">{getGreeting()}, {user.name} 👋</p>
-        <p className="header-sub">Small progress is still progress.</p>
+        <div className="header-badge"><div className="header-dot"/><span className="header-badge-text">{t("header.activeToday")}</span></div>
+        <p className="header-greeting">{t(greetingKey())}, {user.name} 👋</p>
+        <p className="header-sub">{t("header.sub")}</p>
       </div>
       <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:8,position:"relative",zIndex:1}}>
+        <LangToggle/>
         <div className="avatar-wrap">
           <div className="avatar">{user.avatarInitial}</div>
           <div className="avatar-ring"/><div className="avatar-status"/>
           {earnedCount>0&&<div className="badge-count">{earnedCount}</div>}
         </div>
-        <button className="logout-btn" onClick={onLogout}>Sign out</button>
+        <button className="logout-btn" onClick={onLogout}>{t("header.signOut")}</button>
       </div>
     </div>
   );
@@ -473,19 +542,20 @@ function Header({ user, onLogout, earnedCount }) {
 // SUMMARY CARDS
 // ═══════════════════════════════════════════════════════════════
 const CARDS_CFG = [
-  {key:"totalHabits",label:"Habits",icon:"✦",accent:"#4E8EF7",fmt:v=>v},
-  {key:"doneToday",label:"Done",icon:"✓",accent:"#34C77B",fmt:v=>v},
-  {key:"currentStreak",label:"Streak",icon:"🔥",accent:"#FF6B6B",fmt:v=>`${v}d`},
-  {key:"successRate",label:"Success",icon:"◎",accent:"#A78BFA",fmt:v=>`${v}%`},
+  {key:"totalHabits",  labelKey:"summary.habits",  icon:"✦",  accent:"#4E8EF7", fmt:v=>v},
+  {key:"doneToday",    labelKey:"summary.done",    icon:"✓",  accent:"#34C77B", fmt:v=>v},
+  {key:"currentStreak",labelKey:"summary.streak",  icon:"🔥", accent:"#FF6B6B", fmt:v=>`${v}d`},
+  {key:"totalPoints",  labelKey:"summary.points",  icon:"✦",  accent:"#A78BFA", fmt:v=>v},
 ];
 function SummaryCards({data}) {
+  const { t } = useT();
   return (
     <div className="summary-grid anim-1">
-      {CARDS_CFG.map(({key,label,icon,accent,fmt})=>(
+      {CARDS_CFG.map(({key,labelKey,icon,accent,fmt})=>(
         <div key={key} className="stat-card" style={{borderTopColor:accent}}>
           <span className="stat-icon" style={{color:accent}}>{icon}</span>
-          <span className="stat-value">{fmt(data[key])}</span>
-          <span className="stat-label">{label}</span>
+          <span className="stat-value">{fmt(data[key] ?? 0)}</span>
+          <span className="stat-label">{t(labelKey)}</span>
         </div>
       ))}
     </div>
@@ -496,14 +566,108 @@ function SummaryCards({data}) {
 // NEW BADGE ALERT
 // ═══════════════════════════════════════════════════════════════
 function NewBadgeAlert({badges}) {
+  const { t } = useT();
   const [visible,setVisible] = useState(true);
   if (!visible||!badges.length) return null;
-  const b = badges[0];
+  const b = badgeText(t, badges[0]);
   return (
     <div className="badge-alert">
       <span className="badge-alert-icon">{b.icon}</span>
-      <div><p className="badge-alert-title">New Badge: {b.label}</p><p className="badge-alert-desc">{b.desc}</p></div>
+      <div><p className="badge-alert-title">{t("badgeAlert.title",{label:b.label})}</p><p className="badge-alert-desc">{b.desc}</p></div>
       <button onClick={()=>setVisible(false)} className="badge-alert-close">✕</button>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// REWARDS CARD  (v9 — replaces "This Week" + per-habit progress chart)
+// Points earned + weekly-consistency goal + progress toward next badge.
+// ═══════════════════════════════════════════════════════════════
+function RewardsCard({ summary, habits, earnedBadges }) {
+  const { t } = useT();
+  const points   = summary?.totalPoints ?? 0;
+  const wkDone   = summary?.weeklyDone ?? 0;
+  const wkSched  = summary?.weeklyScheduled ?? 0;
+  const wkDoneComplete = summary?.weeklyComplete ?? false;
+  const wkRatio  = wkSched > 0 ? Math.min(1, wkDone / wkSched) : 0;
+
+  const earnedIds  = new Set(earnedBadges.map(b => b.id));
+  const nextRaw    = REWARD_BADGES.find(b => !earnedIds.has(b.id));
+  const nextBadge  = nextRaw ? badgeText(t, nextRaw) : null;
+  const prog       = nextRaw ? badgeProgress(nextRaw, habits, summary) : null;
+
+  return (
+    <div className="weekly-card anim-5">
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+        <p className="section-label" style={{padding:0,margin:0}}>{t("badgeProgress.title")}</p>
+        <span style={{fontSize:13,fontWeight:800,color:"#A78BFA"}}>✦ {points} {t("summary.points")}</span>
+      </div>
+
+      {/* Weekly consistency goal */}
+      <div style={{marginBottom: nextBadge ? 16 : 0}}>
+        <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:6}}>
+          <span style={{fontWeight:700,color:"var(--text)"}}>{t("today.weeklyGoalTitle")}</span>
+          <span style={{color:"var(--text-2)"}}>{wkDone}/{wkSched}</span>
+        </div>
+        <div style={{height:8,background:"#EEF0F5",borderRadius:8,overflow:"hidden"}}>
+          <div style={{
+            height:"100%",borderRadius:8,width:`${wkRatio*100}%`,transition:"width .5s ease",
+            background: wkDoneComplete ? "linear-gradient(90deg,#34C77B,#4E8EF7)" : "#34C77B",
+          }}/>
+        </div>
+        <p style={{fontSize:11,color:"var(--text-2)",marginTop:6,lineHeight:1.5}}>
+          {wkDoneComplete
+            ? t("today.weeklyGoalComplete")
+            : t("today.weeklyGoalProgress",{done:wkDone,total:wkSched})}
+        </p>
+      </div>
+
+      {/* Progress toward the next badge */}
+      {nextBadge && prog && (
+        <div style={{display:"flex",alignItems:"center",gap:12,background:"#F7F8FC",borderRadius:14,padding:"10px 12px"}}>
+          <span style={{fontSize:26,flexShrink:0}}>{nextBadge.icon}</span>
+          <div style={{flex:1,minWidth:0}}>
+            <p style={{fontSize:12,fontWeight:800,color:"var(--text)"}}>{t("badgeProgress.next")}: {nextBadge.label}</p>
+            <p style={{fontSize:11,color:"var(--text-2)",margin:"2px 0 5px"}}>{nextBadge.desc}</p>
+            <div style={{height:5,background:"#E6E8F0",borderRadius:5,overflow:"hidden"}}>
+              <div style={{height:"100%",borderRadius:5,background:"#A78BFA",width:`${prog.ratio*100}%`,transition:"width .5s"}}/>
+            </div>
+          </div>
+          <span style={{fontSize:11,fontWeight:800,color:"#A78BFA",whiteSpace:"nowrap"}}>
+            {Math.round(prog.current)}/{prog.target}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SMALL-WIN TOAST
+// ═══════════════════════════════════════════════════════════════
+function WinToast({ data, onDone }) {
+  const { t } = useT();
+  useEffect(() => {
+    const id = setTimeout(onDone, 3200);
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data.ts]);
+  return (
+    <div style={{
+      position:"fixed",left:"50%",bottom:88,transform:"translateX(-50%)",
+      zIndex:200,maxWidth:340,width:"calc(100% - 40px)",
+      display:"flex",alignItems:"center",gap:12,
+      background:"linear-gradient(135deg,#34C77B,#4E8EF7)",color:"#fff",
+      borderRadius:16,padding:"12px 16px",boxShadow:"0 10px 30px rgba(0,0,0,.2)",
+      animation:"none",
+    }}>
+      <span style={{fontSize:24}}>{data.partial ? "◑" : "🎉"}</span>
+      <div style={{flex:1,minWidth:0}}>
+        <p style={{fontWeight:800,fontSize:13}}>{t("today.smallWinTitle",{points:data.points})}</p>
+        <p style={{fontSize:11,opacity:.92,lineHeight:1.4}}>
+          {data.partial ? t("today.partialWinMsg",{points:data.points}) : t("today.smallWinMsg")}
+        </p>
+      </div>
     </div>
   );
 }
@@ -523,27 +687,27 @@ function HabitList({habits,selectedId,onSelect,onLog,onEdit,onDelete}) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// HABIT CARD  (v7: added partial completion modal)
+// HABIT CARD
 // ═══════════════════════════════════════════════════════════════
 function HabitCard({habit,selected,onSelect,onLog,onEdit,onDelete}) {
+  const { t, lang } = useT();
   const {id,todayStatus,todayPartial,color,icon,name,frequency,scheduledDays,streak,reminderEnabled,reminderTime} = habit;
-  // "partial" counts as a logged completion for the button/bar UI (it still isn't a
-  // full "done" for stats). Tapping ✓ again clears the day.
   const done    = todayStatus === "done" || todayStatus === "partial";
   const missed  = todayStatus === "missed";
   const notSched= todayStatus === "not-scheduled";
   const [menu,setMenu]           = useState(false);
   const [showPartial,setShowPartial] = useState(false);
 
-  const freqLabel = frequency==="daily"?"Daily":frequency==="weekly"?"Weekly":scheduledDays?.join(", ")??"Custom";
+  const freqLabel = frequency==="daily" ? t("habitCard.daily")
+    : frequency==="weekly" ? t("habitCard.weekly")
+    : localizeDays(scheduledDays, lang) || t("habitCard.custom");
 
-  function formatTime(t) {
-    if (!t) return "";
-    const [h, m] = t.split(":").map(Number);
+  function formatTime(tv) {
+    if (!tv) return "";
+    const [h, m] = tv.split(":").map(Number);
     return `${h % 12 || 12}:${String(m).padStart(2,"0")} ${h >= 12 ? "PM" : "AM"}`;
   }
 
-  // Partial indicator text
   const partialText = done && todayPartial
     ? `${todayPartial.value}${todayPartial.unit ? " " + todayPartial.unit : ""} / ${todayPartial.target}${todayPartial.unit ? " " + todayPartial.unit : ""}`
     : null;
@@ -562,7 +726,6 @@ function HabitCard({habit,selected,onSelect,onLog,onEdit,onDelete}) {
               <span className="habit-reminder-badge">⏰ {formatTime(reminderTime)}</span>
             )}
           </div>
-          {/* Partial progress bar */}
           {done && todayPartial && (
             <div style={{marginTop:6}}>
               <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}>
@@ -578,7 +741,7 @@ function HabitCard({habit,selected,onSelect,onLog,onEdit,onDelete}) {
 
         <div className="habit-right">
           {notSched ? (
-            <span className="habit-badge badge-pending">– Rest</span>
+            <span className="habit-badge badge-pending">{t("habitCard.rest")}</span>
           ) : (
             <div className="log-btns">
               <button
@@ -587,17 +750,17 @@ function HabitCard({habit,selected,onSelect,onLog,onEdit,onDelete}) {
                   if (done) {
                     onLog(id, "none", null);
                   } else if (habit.targetValue) {
-                    setShowPartial(true); // open partial modal
+                    setShowPartial(true);
                   } else {
                     onLog(id, "done", null);
                   }
                 }}
-                title={done ? "Tap to uncheck" : "Mark done"}
+                title={done ? t("habitCard.tapUncheck") : t("habitCard.markDone")}
               >✓</button>
               <button
                 className={`log-btn log-miss${missed?" log-miss--active":""}`}
                 onClick={() => onLog(id, missed ? "none" : "missed", null)}
-                title={missed ? "Tap to uncheck" : "Mark missed"}
+                title={missed ? t("habitCard.tapUncheckMiss") : t("habitCard.markMissed")}
               >✗</button>
             </div>
           )}
@@ -605,26 +768,19 @@ function HabitCard({habit,selected,onSelect,onLog,onEdit,onDelete}) {
           <div style={{position:"relative"}}>
             <button className="menu-btn" onClick={()=>setMenu(s=>!s)}>⋯</button>
             {menu&&<div className="menu-dropdown">
-              <button onClick={()=>{onEdit();setMenu(false);}}>✏️ Edit</button>
-              <button onClick={()=>{onDelete();setMenu(false);}} style={{color:"var(--coral)"}}>🗑️ Delete</button>
+              <button onClick={()=>{onEdit();setMenu(false);}}>✏️ {t("common.edit")}</button>
+              <button onClick={()=>{onDelete();setMenu(false);}} style={{color:"var(--coral)"}}>🗑️ {t("common.delete")}</button>
             </div>}
           </div>
         </div>
       </div>
 
-      {/* Partial completion modal */}
       {showPartial && (
         <PartialModal
           habit={habit}
           existing={todayPartial}
-          onSave={(partial) => {
-            onLog(id, "done", partial);
-            setShowPartial(false);
-          }}
-          onFullDone={() => {
-            onLog(id, "done", null);
-            setShowPartial(false);
-          }}
+          onSave={(partial) => { onLog(id, "done", partial); setShowPartial(false); }}
+          onFullDone={() => { onLog(id, "done", null); setShowPartial(false); }}
           onClose={() => setShowPartial(false)}
         />
       )}
@@ -633,15 +789,15 @@ function HabitCard({habit,selected,onSelect,onLog,onEdit,onDelete}) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// PARTIAL COMPLETION MODAL  (v7 new)
+// PARTIAL COMPLETION MODAL
 // ═══════════════════════════════════════════════════════════════
 function PartialModal({ habit, existing, onSave, onFullDone, onClose }) {
+  const { t } = useT();
   const target = habit.targetValue || 100;
   const unit   = habit.unit || "";
   const [value, setValue] = useState(existing?.value ?? target);
   const [note,  setNote]  = useState(existing?.note  ?? "");
 
-  // Round value to avoid floating point issues (e.g. 22.5 → stored as 22.5)
   const pct = Math.min(100, Math.round((value / target) * 100));
 
   const pctColor =
@@ -654,20 +810,19 @@ function PartialModal({ habit, existing, onSave, onFullDone, onClose }) {
     if (pct >= 100) {
       onFullDone();
     } else {
-      // Save with exact pct to avoid rounding errors
-      // e.g. 75% of 30 mins: save value=22.5→display as 22.5, pct=75 exactly
-      const exactValue = Math.round(value * 10) / 10; // 1 decimal max
+      const exactValue = Math.round(value * 10) / 10;
       onSave({ value: exactValue, target, unit, pct, note: note.trim() });
     }
   }
+
+  const targetLabel = `${target}${unit ? ` ${unit}` : ""}`;
 
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-sheet" onClick={e => e.stopPropagation()}>
         <div className="modal-handle"/>
-        <p className="modal-title">Log Progress — {habit.icon} {habit.name}</p>
+        <p className="modal-title">{t("partial.title",{habit:`${habit.icon} ${habit.name}`})}</p>
 
-        {/* Circular progress indicator */}
         <div style={{display:"flex",justifyContent:"center",margin:"8px 0 20px"}}>
           <div style={{position:"relative",width:96,height:96}}>
             <svg width="96" height="96" viewBox="0 0 96 96" style={{transform:"rotate(-90deg)"}}>
@@ -680,15 +835,14 @@ function PartialModal({ habit, existing, onSave, onFullDone, onClose }) {
             </svg>
             <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
               <span style={{fontSize:20,fontWeight:800,color:pctColor,lineHeight:1}}>{pct}%</span>
-              <span style={{fontSize:10,color:"var(--text-2)",marginTop:2}}>done</span>
+              <span style={{fontSize:10,color:"var(--text-2)",marginTop:2}}>{t("common.done")}</span>
             </div>
           </div>
         </div>
 
-        {/* Slider */}
         <label className="field-label">
-          How much did you complete?
-          <span style={{float:"right",color:"var(--text-2)"}}>Target: {target}{unit ? ` ${unit}` : ""}</span>
+          {t("partial.howMuch")}
+          <span style={{float:"right",color:"var(--text-2)"}}>{t("partial.target",{target:targetLabel})}</span>
         </label>
         <input
           type="range" min={0} max={target}
@@ -698,7 +852,6 @@ function PartialModal({ habit, existing, onSave, onFullDone, onClose }) {
           style={{width:"100%",margin:"8px 0 4px",accentColor:pctColor}}
         />
 
-        {/* Number input */}
         <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16}}>
           <input
             type="number" min={0} max={target * 2}
@@ -710,11 +863,9 @@ function PartialModal({ habit, existing, onSave, onFullDone, onClose }) {
           {unit && <span style={{fontSize:14,color:"var(--text-2)",fontWeight:600}}>{unit}</span>}
         </div>
 
-        {/* Quick presets */}
         <div style={{display:"flex",gap:6,marginBottom:16}}>
           {[25,50,75,100].map(p => {
-            // Use exact preset pct to avoid rounding errors (e.g. 75% of 30 = 22.5 → 23 → 77%)
-            const v = (p / 100) * target; // keep as float, round only for display
+            const v = (p / 100) * target;
             const isActive = Math.round(value) === Math.round(v);
             return (
               <button key={p}
@@ -732,45 +883,44 @@ function PartialModal({ habit, existing, onSave, onFullDone, onClose }) {
           })}
         </div>
 
-        {/* Motivational message */}
         {value > 0 && value < target && (
           <div style={{background:"#F0F4FF",borderRadius:12,padding:"10px 14px",marginBottom:14,fontSize:13,color:"#4E8EF7",lineHeight:1.5}}>
-            {pct >= 75 ? "💪 Almost there! Every bit counts." :
-             pct >= 50 ? "⚡ Halfway done is still progress!" :
-             "🌱 Showing up is what matters most."}
+            {pct >= 75 ? t("partial.msg75") : pct >= 50 ? t("partial.msg50") : t("partial.msgLow")}
           </div>
         )}
         {value >= target && (
           <div style={{background:"#F0FFF6",borderRadius:12,padding:"10px 14px",marginBottom:14,fontSize:13,color:"#34C77B",lineHeight:1.5}}>
-            🎉 Full completion! You hit your target!
+            {t("partial.msgFull")}
           </div>
         )}
 
-        {/* Note */}
-        <label className="field-label">Note (optional)</label>
+        <label className="field-label">{t("partial.note")}</label>
         <textarea
           className="field-input"
           value={note}
           onChange={e => setNote(e.target.value)}
-          placeholder="e.g. Felt tired, but still showed up 💪"
+          placeholder={t("partial.notePlaceholder")}
           rows={2}
           style={{resize:"none",marginBottom:16}}
           maxLength={200}
         />
 
         <button className="submit-btn" onClick={handleSave} disabled={value === 0}>
-          {value >= target ? "Mark Complete ✓" : `Log ${value}${unit ? " " + unit : ""} (${pct}%)`}
+          {value >= target
+            ? t("partial.markComplete")
+            : t("partial.logAmount",{value:`${value}${unit ? " " + unit : ""}`,pct})}
         </button>
-        <button className="cancel-btn" onClick={onClose}>Cancel</button>
+        <button className="cancel-btn" onClick={onClose}>{t("common.cancel")}</button>
       </div>
     </div>
   );
 }
 
 // ═══════════════════════════════════════════════════════════════
-// HABIT FORM MODAL  (v7: added Target Value + Unit fields)
+// HABIT FORM MODAL
 // ═══════════════════════════════════════════════════════════════
 function HabitFormModal({title,initial,onSave,onClose}) {
+  const { t } = useT();
   const [name,setName]             = useState(initial?.name??"");
   const [icon,setIcon]             = useState(initial?.icon??"✨");
   const [freq,setFreq]             = useState(initial?.frequency??"daily");
@@ -791,7 +941,7 @@ function HabitFormModal({title,initial,onSave,onClose}) {
 
   async function submit() {
     if (!name.trim()) return;
-    if (freq==="custom"&&days.length===0){alert("Pick at least one day.");return;}
+    if (freq==="custom"&&days.length===0){alert(t("form.pickDayAlert"));return;}
     setSaving(true);
     await onSave({
       name: name.trim(), icon,
@@ -811,15 +961,15 @@ function HabitFormModal({title,initial,onSave,onClose}) {
         <div className="modal-handle"/>
         <p className="modal-title">{title}</p>
 
-        <label className="field-label">Icon</label>
+        <label className="field-label">{t("form.icon")}</label>
         <div className="icon-picker-row">
           <div className="icon-selected">{icon}</div>
           <button className="icon-browse-btn" onClick={()=>setShowI(s=>!s)}>
-            {showIcons?"Close ✕":"Browse 50 icons"}
+            {showIcons?t("form.closeIcons"):t("form.browseIcons")}
           </button>
         </div>
         {showIcons&&<>
-          <input className="field-input" type="text" placeholder="Search icons…" value={search}
+          <input className="field-input" type="text" placeholder={t("form.searchIcons")} value={search}
             onChange={e=>setSearch(e.target.value)} style={{marginBottom:10}}/>
           <div className="icon-grid">
             {filtered.map(({icon:ic,label})=>(
@@ -829,20 +979,19 @@ function HabitFormModal({title,initial,onSave,onClose}) {
           </div>
         </>}
 
-        <label className="field-label" style={{marginTop:16}}>Name</label>
-        <input className="field-input" type="text" placeholder="e.g. Exercise, Reading…" value={name}
+        <label className="field-label" style={{marginTop:16}}>{t("form.name")}</label>
+        <input className="field-input" type="text" placeholder={t("form.namePlaceholder")} value={name}
           onChange={e=>setName(e.target.value)} maxLength={40} onKeyDown={e=>e.key==="Enter"&&submit()}/>
 
-        {/* ── v7: Target value + unit ── */}
         <label className="field-label" style={{marginTop:16}}>
-          Daily Target
-          <span style={{float:"right",fontSize:10,color:"var(--text-3)",fontWeight:400}}>Optional — enables partial logging</span>
+          {t("form.dailyTarget")}
+          <span style={{float:"right",fontSize:10,color:"var(--text-3)",fontWeight:400}}>{t("form.optionalPartial")}</span>
         </label>
         <div style={{display:"flex",gap:8}}>
           <input
             type="number" min={1} max={9999}
             className="field-input"
-            placeholder="e.g. 30"
+            placeholder="30"
             value={targetValue}
             onChange={e=>setTarget(e.target.value)}
             style={{flex:1}}
@@ -850,7 +999,7 @@ function HabitFormModal({title,initial,onSave,onClose}) {
           <input
             type="text"
             className="field-input"
-            placeholder="unit (mins, pages…)"
+            placeholder={t("form.targetUnitPlaceholder")}
             value={unit}
             onChange={e=>setUnit(e.target.value)}
             maxLength={10}
@@ -858,31 +1007,31 @@ function HabitFormModal({title,initial,onSave,onClose}) {
           />
         </div>
         <p style={{fontSize:11,color:"var(--text-3)",marginTop:4,marginBottom:8}}>
-          Example: 30 mins · 20 pages · 8 glasses
+          {t("form.targetExample")}
         </p>
 
-        <label className="field-label">Frequency</label>
+        <label className="field-label">{t("form.frequency")}</label>
         <div className="freq-row">
-          {[["daily","📅 Daily"],["custom","📆 Pick days"]].map(([f,l])=>(
+          {[["daily",t("form.freqDaily")],["custom",t("form.freqPickDays")]].map(([f,l])=>(
             <button key={f} className={`freq-btn${freq===f?" freq-btn--active":""}`} onClick={()=>setFreq(f)}>{l}</button>
           ))}
         </div>
 
         {freq==="custom"&&<>
-          <label className="field-label">Which days?</label>
+          <label className="field-label">{t("form.whichDays")}</label>
           <div className="day-picker">
             {WEEK_DAYS.map(d=>(
               <button key={d} className={`day-btn${days.includes(d)?" day-btn--active":""}`} onClick={()=>toggleDay(d)}>{d}</button>
             ))}
           </div>
-          {days.length>0&&<p className="day-summary">{days.length}× per week · {days.join(", ")}</p>}
+          {days.length>0&&<p className="day-summary">{t("form.daySummary",{n:days.length,days:days.join(", ")})}</p>}
         </>}
 
         <div className="reminder-section">
           <div className="reminder-toggle-row">
             <div>
-              <p className="reminder-toggle-label">⏰ Set Reminder</p>
-              <p className="reminder-toggle-sub">Get notified at a specific time</p>
+              <p className="reminder-toggle-label">{t("form.setReminder")}</p>
+              <p className="reminder-toggle-sub">{t("form.reminderSub")}</p>
             </div>
             <button
               className={`toggle-btn${reminderOn?" toggle-btn--on":""}`}
@@ -893,18 +1042,18 @@ function HabitFormModal({title,initial,onSave,onClose}) {
           </div>
           {reminderOn&&(
             <div className="reminder-time-wrap">
-              <label className="field-label">Reminder time</label>
+              <label className="field-label">{t("form.reminderTime")}</label>
               <input type="time" className="field-input time-input" value={reminderTime}
                 onChange={e=>setRemTime(e.target.value)}/>
-              <p className="reminder-hint">📱 In-app + 📅 Google Calendar reminders will be set</p>
+              <p className="reminder-hint">{t("form.reminderHint")}</p>
             </div>
           )}
         </div>
 
         <button className="submit-btn" onClick={submit} disabled={!name.trim()||saving} style={{marginTop:20}}>
-          {saving?"Saving…":(initial?"Save Changes ✦":"Add Habit ✦")}
+          {saving?t("form.saving"):(initial?t("form.saveChanges"):t("form.addHabit"))}
         </button>
-        <button className="cancel-btn" onClick={onClose}>Cancel</button>
+        <button className="cancel-btn" onClick={onClose}>{t("common.cancel")}</button>
       </div>
     </div>
   );
@@ -914,16 +1063,16 @@ function HabitFormModal({title,initial,onSave,onClose}) {
 // CALENDAR VIEW
 // ═══════════════════════════════════════════════════════════════
 function CalendarView({habit,uid}) {
+  const { t, lang } = useT();
   const today    = new Date();
-  const todayStr = bangkokKey();  // Bangkok "today" for the highlight
+  const todayStr = bangkokKey();
   const [year,setYear]     = useState(today.getFullYear());
   const [month,setMonth]   = useState(today.getMonth());
   const [localLog, setLocalLog]         = useState({});
   const [localPartial, setLocalPartial] = useState({});
 
-  const FULL_MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+  const monthNames = MONTH_NAMES[lang] ?? MONTH_NAMES.en;
 
-  // date key → partial object, keyed on the same Bangkok basis as stored logs.
   const partialMap = useMemo(() => {
     const map = {};
     if (!habit?._rawLogs) return map;
@@ -963,9 +1112,6 @@ function CalendarView({habit,uid}) {
   function handleDayLog(dateStr, currentStatus, newStatus) {
     const resolvedStatus = currentStatus === newStatus ? "none" : newStatus;
     setLocalLog(prev => ({ ...prev, [dateStr]: resolvedStatus }));
-    // Marking a day plain "done" from the calendar clears any stored partial
-    // (see logHabitDate) — mirror that optimistically so the cell doesn't keep
-    // showing an "x%" badge until the Firestore snapshot lands.
     if (resolvedStatus === "done") setLocalPartial(prev => ({ ...prev, [dateStr]: null }));
     logHabitDate(uid, habit.id, dateStr, resolvedStatus)
       .catch(e => {
@@ -978,11 +1124,13 @@ function CalendarView({habit,uid}) {
   const sched = calDays.filter(d=>d.scheduled).length;
   const rate  = sched>0 ? Math.round(done/sched*100) : 0;
 
+  const weekdayHeaders = WEEK_DAYS.map(d => WEEKDAY_LABELS[lang]?.[d] ?? d);
+
   return (
     <div className="cal-card">
       <div className="cal-quick-btns">
-        {[["This month",0],["Last month",-1],["2 months ago",-2]].map(([l,o])=>(
-          <button key={l}
+        {[[t("calendar.thisMonth"),0],[t("calendar.lastMonth"),-1],[t("calendar.twoMonthsAgo"),-2]].map(([l,o])=>(
+          <button key={o}
             className={`cal-quick-btn${year===today.getFullYear()&&month===today.getMonth()+o?"active":""}`}
             onClick={()=>jumpTo(o)}>{l}</button>
         ))}
@@ -990,13 +1138,13 @@ function CalendarView({habit,uid}) {
       <div className="cal-nav">
         <button className="cal-nav-btn" onClick={prevMonth}>‹</button>
         <div>
-          <p className="cal-month-label">{FULL_MONTHS[month]} {year}</p>
-          <p className="cal-month-stats">{done}/{sched} days · {rate}% success</p>
+          <p className="cal-month-label">{monthNames[month]} {year}</p>
+          <p className="cal-month-stats">{t("calendar.monthStats",{done,sched,rate})}</p>
         </div>
         <button className="cal-nav-btn" onClick={nextMonth} disabled={isCur}>›</button>
       </div>
       <div className="cal-grid cal-header-row">
-        {["M","T","W","T","F","S","S"].map((d,i)=><div key={i} className="cal-day-hdr">{d}</div>)}
+        {weekdayHeaders.map((d,i)=><div key={i} className="cal-day-hdr">{d}</div>)}
       </div>
       <div className="cal-grid">
         {Array.from({length:offset},(_,i)=><div key={`e${i}`}/>)}
@@ -1005,20 +1153,20 @@ function CalendarView({habit,uid}) {
         ))}
       </div>
       <div className="cal-legend">
-        <span className="cal-legend-item"><span className="cal-dot done-dot"/>Done</span>
-        <span className="cal-legend-item"><span className="cal-dot" style={{background:"#F59E0B"}}/>Partial</span>
-        <span className="cal-legend-item"><span className="cal-dot miss-dot"/>Missed</span>
-        <span className="cal-legend-item"><span className="cal-dot rest-dot"/>Rest</span>
-        <span className="cal-legend-item"><span className="cal-dot none-dot"/>No Record</span>
+        <span className="cal-legend-item"><span className="cal-dot done-dot"/>{t("calendar.legendDone")}</span>
+        <span className="cal-legend-item"><span className="cal-dot" style={{background:"#F59E0B"}}/>{t("calendar.legendPartial")}</span>
+        <span className="cal-legend-item"><span className="cal-dot miss-dot"/>{t("calendar.legendMissed")}</span>
+        <span className="cal-legend-item"><span className="cal-dot rest-dot"/>{t("calendar.legendRest")}</span>
+        <span className="cal-legend-item"><span className="cal-dot none-dot"/>{t("calendar.legendNone")}</span>
       </div>
     </div>
   );
 }
 
 function DayCell({ d, isToday, isFuture, onLog }) {
+  const { t } = useT();
   const [open, setOpen] = useState(false);
 
-  // partial data comes from d.partial (stored in Firestore log)
   const partial = d.partial ?? null;
   const isPartial = d.status === "done" && partial && partial.pct < 100;
 
@@ -1036,11 +1184,7 @@ function DayCell({ d, isToday, isFuture, onLog }) {
         onClick={()=>!isFuture&&setOpen(o=>!o)}
         style={{
           cursor: isFuture ? "default" : "pointer",
-          // Partial days get an orange/amber background instead of green
-          ...(isPartial ? {
-            background: "#FFF3CD",
-            border: "2px solid #F59E0B",
-          } : {})
+          ...(isPartial ? { background: "#FFF3CD", border: "2px solid #F59E0B" } : {})
         }}
       >
         <span className="cal-day-num" style={isPartial?{color:"#92400E"}:{}}>{d.day}</span>
@@ -1053,7 +1197,6 @@ function DayCell({ d, isToday, isFuture, onLog }) {
         )}
       </div>
 
-      {/* Popup on tap */}
       {open && !isFuture && (
         <div className="day-log-menu" onClick={e=>e.stopPropagation()}>
           <p className="day-log-date">{d.date}</p>
@@ -1063,8 +1206,8 @@ function DayCell({ d, isToday, isFuture, onLog }) {
             </p>
           )}
           <div style={{display:"flex",gap:5}}>
-            <button className={`day-log-btn day-log-done${d.status==="done"&&!isPartial?" active":""}`} onClick={()=>tap("done")}>✓ Done</button>
-            <button className={`day-log-btn day-log-miss${d.status==="missed"?" active":""}`} onClick={()=>tap("missed")}>✗ Miss</button>
+            <button className={`day-log-btn day-log-done${d.status==="done"&&!isPartial?" active":""}`} onClick={()=>tap("done")}>{t("calendar.dayDone")}</button>
+            <button className={`day-log-btn day-log-miss${d.status==="missed"?" active":""}`} onClick={()=>tap("missed")}>{t("calendar.dayMiss")}</button>
           </div>
           <button className="day-log-close" onClick={()=>setOpen(false)}>✕</button>
         </div>
@@ -1074,75 +1217,10 @@ function DayCell({ d, isToday, isFuture, onLog }) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// PROGRESS CHART
-// ═══════════════════════════════════════════════════════════════
-function ProgressChart({habit,chartData,period,onPeriodChange}) {
-  if (!chartData?.length) return null;
-  return (
-    <div className="chart-card anim-4">
-      <div className="chart-header">
-        <div><span className="chart-title">{habit.name} Progress</span><span className="chart-sub">{period==="7"?"Last 7 days":"Last 30 days"}</span></div>
-        <div className="period-tabs">
-          {["7","30"].map(p=><button key={p} className={`period-btn${period===p?" active":""}`}
-            style={period===p?{background:habit.color}:undefined} onClick={()=>onPeriodChange(p)}>{p}D</button>)}
-        </div>
-      </div>
-      <div className="bar-chart">
-        {chartData.map((d,i)=>{
-          const isPartial  = d.status==="done" && d.partial && d.partial.pct < 100;
-          const isFullDone = d.status==="done" && !isPartial;
-          const barHeight  = isFullDone ? "100%" : isPartial ? `${d.partial.pct}%` : "0%";
-          const barColor   = isPartial ? "#F59E0B" : habit.color;
-          return (
-            <div key={i} className="bar-col" title={isPartial?`${d.partial.pct}% done`:d.status}>
-              <div className="bar-track">
-                <div className="bar-fill" style={{height:barHeight,background:barColor,opacity:isPartial?0.9:1}}/>
-              </div>
-              {(period==="7"||i%5===0)&&<span className="bar-label">{d.day}</span>}
-            </div>
-          );
-        })}
-      </div>
-      <div className="chart-legend">
-        <div className="legend-dot" style={{background:habit.color}}/><span className="legend-text">Done</span>
-        <div className="legend-dot" style={{background:"#F59E0B"}}/><span className="legend-text">Partial</span>
-        <div className="legend-dot legend-miss"/><span className="legend-text">Missed</span>
-      </div>
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════
-// WEEKLY SUMMARY
-// ═══════════════════════════════════════════════════════════════
-function WeeklySummary({days}) {
-  return (
-    <div className="weekly-card anim-5">
-      <p className="section-label" style={{padding:0,marginBottom:14}}>This Week</p>
-      <div className="weekly-row">
-        {days.map(d=>{
-          const isPartial = d.done && d.partial && d.partial.pct < 100;
-          return (
-            <div key={d.day} className="week-day">
-              <div
-                className={`week-dot ${isPartial?"":d.done?"done":d.scheduled?"miss":"rest"}`}
-                style={isPartial?{background:"#FEF3C7",border:"2px solid #F59E0B",color:"#92400E",fontSize:9,fontWeight:800}:{}}
-              >
-                {isPartial ? `${d.partial.pct}%` : d.done ? "✓" : d.scheduled ? "✗" : "–"}
-              </div>
-              <span className="week-label">{d.day}</span>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════
 // AI COACH
 // ═══════════════════════════════════════════════════════════════
 function AICoachCard({summary,earnedBadges}) {
+  const { t } = useT();
   const rate   = summary?.successRate ?? 0;
   const streak = summary?.currentStreak ?? 0;
   const done   = summary?.doneToday ?? 0;
@@ -1150,32 +1228,34 @@ function AICoachCard({summary,earnedBadges}) {
   const allDone= done === total && total > 0;
 
   const message = allDone
-    ? `🎉 All habits done today! You're on fire, keep this momentum going!`
+    ? t("coach.allDone")
     : streak >= 7
-    ? `🔥 ${streak}-day streak! You're building real momentum — don't stop now!`
+    ? t("coach.streak7",{streak})
     : rate >= 80
-    ? `✨ ${rate}% success rate — you're crushing it! Keep showing up every day.`
+    ? t("coach.rate80",{rate})
     : streak >= 3
-    ? `⚡ ${streak} days in a row! Consistency is your superpower. Keep going!`
-    : `💪 Every habit done is a vote for the person you want to become. You've got this!`;
+    ? t("coach.streak3",{streak})
+    : t("coach.default");
 
-  const unearned  = REWARD_BADGES.filter(b => !earnedBadges.find(e=>e.id===b.id));
-  const nextBadge = unearned.find(b => b.type==="streak")||unearned[0];
+  const earnedIds = new Set(earnedBadges.map(b => b.id));
+  const unearned  = REWARD_BADGES.filter(b => !earnedIds.has(b.id));
+  const nextRaw   = unearned.find(b => b.type==="streak") || unearned[0];
+  const nextBadge = nextRaw ? badgeText(t, nextRaw) : null;
 
   return (
     <div className="ai-card anim-6">
       <div className="ai-orb ai-orb1"/><div className="ai-orb ai-orb2"/>
       <div className="ai-header">
         <div className="ai-icon-box">✨</div>
-        <div><span className="ai-title">AI Coach</span><span className="ai-powered">Powered by Claude</span></div>
+        <div><span className="ai-title">{t("coach.title")}</span><span className="ai-powered">{t("coach.poweredBy")}</span></div>
       </div>
       <p className="ai-msg">{message}</p>
       {earnedBadges.length>0&&(
         <div className="ai-badges">
-          <p className="ai-badges-label">Your badges</p>
+          <p className="ai-badges-label">{t("coach.yourBadges")}</p>
           <div className="ai-badges-row">
             {earnedBadges.slice(0,6).map(b=>(
-              <div key={b.id} className="ai-badge-pill" title={b.label}>{b.icon}</div>
+              <div key={b.id} className="ai-badge-pill" title={badgeText(t,b).label}>{b.icon}</div>
             ))}
             {earnedBadges.length>6&&<div className="ai-badge-pill">+{earnedBadges.length-6}</div>}
           </div>
@@ -1184,7 +1264,7 @@ function AICoachCard({summary,earnedBadges}) {
       {nextBadge&&(
         <div className="ai-next-badge">
           <span>{nextBadge.icon}</span>
-          <p>Next: <strong>{nextBadge.label}</strong> — {nextBadge.desc}</p>
+          <p>{t("coach.next",{label:nextBadge.label,desc:nextBadge.desc})}</p>
         </div>
       )}
     </div>
@@ -1195,38 +1275,136 @@ function AICoachCard({summary,earnedBadges}) {
 // BADGES TAB
 // ═══════════════════════════════════════════════════════════════
 function BadgesTab({earnedBadges}) {
+  const { t } = useT();
   const earnedIds = new Set(earnedBadges.map(b=>b.id));
+  const pct = Math.round(earnedBadges.length/REWARD_BADGES.length*100);
   return (
     <div style={{padding:"0 16px"}}>
       <p style={{fontSize:13,color:"var(--text-2)",marginBottom:16,marginTop:4}}>
-        {earnedBadges.length} of {REWARD_BADGES.length} badges earned
+        {t("badges.earnedOf",{earned:earnedBadges.length,total:REWARD_BADGES.length})}
       </p>
       <div style={{background:"#EEF0F5",borderRadius:20,height:8,marginBottom:24,overflow:"hidden"}}>
         <div style={{height:"100%",borderRadius:20,background:"linear-gradient(90deg,#34C77B,#4E8EF7)",
-          width:`${Math.round(earnedBadges.length/REWARD_BADGES.length*100)}%`,transition:"width .5s ease"}}/>
+          width:`${pct}%`,transition:"width .5s ease"}}/>
       </div>
       {earnedBadges.length>0&&<>
-        <p className="section-label" style={{padding:0,marginBottom:12}}>🏆 Earned</p>
+        <p className="section-label" style={{padding:0,marginBottom:12}}>{t("badges.earned")}</p>
         <div className="badges-grid">
-          {earnedBadges.map(b=>(
-            <div key={b.id} className="badge-card earned">
-              <span className="badge-icon">{b.icon}</span>
-              <p className="badge-label">{b.label}</p>
-              <p className="badge-desc">{b.desc}</p>
-            </div>
-          ))}
+          {earnedBadges.map(b=>{
+            const bt = badgeText(t,b);
+            return (
+              <div key={b.id} className="badge-card earned">
+                <span className="badge-icon">{bt.icon}</span>
+                <p className="badge-label">{bt.label}</p>
+                <p className="badge-desc">{bt.desc}</p>
+              </div>
+            );
+          })}
         </div>
       </>}
-      <p className="section-label" style={{padding:0,marginBottom:12,marginTop:24}}>🔒 Locked</p>
+      <p className="section-label" style={{padding:0,marginBottom:12,marginTop:24}}>{t("badges.locked")}</p>
       <div className="badges-grid">
-        {REWARD_BADGES.filter(b=>!earnedIds.has(b.id)).map(b=>(
-          <div key={b.id} className="badge-card locked">
-            <span className="badge-icon" style={{filter:"grayscale(1)",opacity:.4}}>{b.icon}</span>
-            <p className="badge-label" style={{color:"var(--text-3)"}}>{b.label}</p>
-            <p className="badge-desc">{b.desc}</p>
+        {REWARD_BADGES.filter(b=>!earnedIds.has(b.id)).map(b=>{
+          const bt = badgeText(t,b);
+          return (
+            <div key={b.id} className="badge-card locked">
+              <span className="badge-icon" style={{filter:"grayscale(1)",opacity:.4}}>{bt.icon}</span>
+              <p className="badge-label" style={{color:"var(--text-3)"}}>{bt.label}</p>
+              <p className="badge-desc">{bt.desc}</p>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SETTINGS TAB  (v9 new)
+// ═══════════════════════════════════════════════════════════════
+function SettingsTab({ user, authUser, isAdmin }) {
+  const { t } = useT();
+  const rows = [
+    [t("settings.accountName"),  user?.name ?? "—"],
+    [t("settings.accountEmail"), user?.email ?? authUser.email ?? "—"],
+    [t("settings.accountDept"),  user?.department ?? "—"],
+  ];
+  return (
+    <div style={{padding:"0 16px"}}>
+      <div className="reminder-status-card" style={{marginBottom:16}}>
+        <p style={{fontWeight:800,fontSize:14,color:"var(--text)",marginBottom:12}}>{t("settings.language")}</p>
+        <LangToggle dark={false}/>
+      </div>
+
+      <div className="reminder-status-card" style={{marginBottom:16}}>
+        <p style={{fontWeight:800,fontSize:14,color:"var(--text)",marginBottom:10}}>{t("settings.account")}</p>
+        {rows.map(([label,value])=>(
+          <div key={label} style={{display:"flex",justifyContent:"space-between",gap:12,padding:"6px 0",fontSize:13}}>
+            <span style={{color:"var(--text-2)"}}>{label}</span>
+            <span style={{color:"var(--text)",fontWeight:600,textAlign:"right"}}>{value}</span>
           </div>
         ))}
       </div>
+
+      {isAdmin
+        ? <ManageDepartments/>
+        : (
+          <p style={{fontSize:11,color:"var(--text-3)",textAlign:"center",marginTop:8}}>
+            {t("settings.manageDept")} · {t("settings.adminOnly")}
+          </p>
+        )}
+    </div>
+  );
+}
+
+function ManageDepartments() {
+  const { t } = useT();
+  const [list,setList] = useState(null);
+  const [name,setName] = useState("");
+  const [busy,setBusy] = useState(false);
+
+  useEffect(() => subscribeToDepartments(setList), []);
+
+  async function add() {
+    const n = name.trim();
+    if (!n || busy) return;
+    setBusy(true);
+    try { await addDepartment(n); setName(""); }
+    catch(e) { alert(e.message); }
+    finally { setBusy(false); }
+  }
+  async function remove(d) {
+    if (!window.confirm(t("settings.removeDeptConfirm",{name:d}))) return;
+    try { await removeDepartment(d); } catch(e) { alert(e.message); }
+  }
+
+  return (
+    <div className="reminder-status-card">
+      <p style={{fontWeight:800,fontSize:14,color:"var(--text)"}}>{t("settings.manageDept")}</p>
+      <p style={{fontSize:12,color:"var(--text-2)",margin:"4px 0 12px",lineHeight:1.5}}>{t("settings.manageDeptSub")}</p>
+      <div style={{display:"flex",gap:8,marginBottom:12}}>
+        <input className="field-input" style={{flex:1}} value={name}
+          onChange={e=>setName(e.target.value)} placeholder={t("settings.newDeptPlaceholder")}
+          onKeyDown={e=>e.key==="Enter"&&add()} maxLength={60}/>
+        <button className="submit-btn" style={{width:"auto",padding:"0 18px",margin:0}}
+          onClick={add} disabled={!name.trim()||busy}>{t("common.add")}</button>
+      </div>
+      {list===null ? (
+        <p style={{fontSize:12,color:"var(--text-3)"}}>{t("common.loading")}</p>
+      ) : list.length===0 ? (
+        <p style={{fontSize:12,color:"var(--text-3)"}}>{t("settings.deptEmpty")}</p>
+      ) : (
+        <div style={{display:"flex",flexDirection:"column",gap:6}}>
+          {list.map(d=>(
+            <div key={d} style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,
+              background:"#F7F8FC",borderRadius:10,padding:"8px 12px"}}>
+              <span style={{fontSize:13,color:"var(--text)"}}>{d}</span>
+              <button onClick={()=>remove(d)} title={t("common.remove")}
+                style={{border:"none",background:"none",cursor:"pointer",color:"var(--coral)",fontSize:13,fontWeight:800,flexShrink:0}}>✕</button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1235,10 +1413,8 @@ function BadgesTab({earnedBadges}) {
 // HABIT STAT CARD
 // ═══════════════════════════════════════════════════════════════
 function HabitStatCard({habit}) {
+  const { t } = useT();
   const {name,icon,color,streak,successRate,totalDone,totalLogged} = habit;
-
-  // computeHabitStats already builds this on a single Bangkok date basis, and
-  // subscribeToHabits keeps it fresh via live log listeners.
   const chartData30d = habit.chartData30d ?? [];
 
   return (
@@ -1247,15 +1423,15 @@ function HabitStatCard({habit}) {
         <div style={{background:`${color}18`,width:44,height:44,borderRadius:13,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,flexShrink:0}}>{icon}</div>
         <div style={{flex:1}}>
           <p style={{fontWeight:800,fontSize:15,color:"var(--text)"}}>{name}</p>
-          <p style={{fontSize:12,color:"var(--text-2)",marginTop:2}}>Last 30 days</p>
+          <p style={{fontSize:12,color:"var(--text-2)",marginTop:2}}>{t("stats.last30")}</p>
         </div>
         <div style={{textAlign:"right"}}>
           <p style={{fontSize:26,fontWeight:800,color,letterSpacing:"-1px"}}>{successRate}%</p>
-          <p style={{fontSize:11,color:"var(--text-2)"}}>success</p>
+          <p style={{fontSize:11,color:"var(--text-2)"}}>{t("stats.success")}</p>
         </div>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
-        {[{label:"Streak",value:`${streak}d`,accent:"#FF6B6B"},{label:"Done",value:totalDone,accent:"#34C77B"},{label:"Logged",value:totalLogged,accent:"#4E8EF7"}].map(({label,value,accent})=>(
+        {[{label:t("stats.streak"),value:`${streak}d`,accent:"#FF6B6B"},{label:t("stats.done"),value:totalDone,accent:"#34C77B"},{label:t("stats.logged"),value:totalLogged,accent:"#4E8EF7"}].map(({label,value,accent})=>(
           <div key={label} style={{background:"#F7F8FC",borderRadius:12,padding:"10px 8px",textAlign:"center"}}>
             <p style={{fontSize:18,fontWeight:800,color:accent,letterSpacing:"-0.5px"}}>{value}</p>
             <p style={{fontSize:10,color:"var(--text-2)",fontWeight:600,textTransform:"uppercase",marginTop:2}}>{label}</p>
@@ -1271,16 +1447,16 @@ function HabitStatCard({habit}) {
           const opacity    = isFullDone || isPartial ? 1 : 0.5;
           return (
             <div key={i} style={{flex:1,height:"100%",display:"flex",flexDirection:"column",justifyContent:"flex-end"}}
-              title={isFullDone?"Done":isPartial?`${d.partial.pct}% done`:""}>
+              title={isFullDone?t("calendar.legendDone"):isPartial?`${d.partial.pct}%`:""}>
               <div style={{width:"100%",height:barHeight,background:barColor,borderRadius:"2px 2px 0 0",opacity,transition:"height .3s ease"}}/>
             </div>
           );
         })}
       </div>
       <div style={{display:"flex",gap:10,marginTop:8,alignItems:"center"}}>
-        <div style={{width:10,height:10,borderRadius:2,background:color}}/><span style={{fontSize:10,color:"var(--text-2)"}}>Done</span>
-        <div style={{width:10,height:10,borderRadius:2,background:"#F59E0B"}}/><span style={{fontSize:10,color:"var(--text-2)"}}>Partial</span>
-        <div style={{width:10,height:10,borderRadius:2,background:"#EEF0F5"}}/><span style={{fontSize:10,color:"var(--text-2)"}}>Missed</span>
+        <div style={{width:10,height:10,borderRadius:2,background:color}}/><span style={{fontSize:10,color:"var(--text-2)"}}>{t("calendar.legendDone")}</span>
+        <div style={{width:10,height:10,borderRadius:2,background:"#F59E0B"}}/><span style={{fontSize:10,color:"var(--text-2)"}}>{t("calendar.legendPartial")}</span>
+        <div style={{width:10,height:10,borderRadius:2,background:"#EEF0F5"}}/><span style={{fontSize:10,color:"var(--text-2)"}}>{t("calendar.legendMissed")}</span>
       </div>
     </div>
   );
@@ -1290,18 +1466,19 @@ function HabitStatCard({habit}) {
 // NOTIFICATION BANNER
 // ═══════════════════════════════════════════════════════════════
 function NotifBanner({ onAllow, denied }) {
+  const { t } = useT();
   const [dismissed, setDismissed] = useState(false);
   if (dismissed) return null;
   return (
     <div className="notif-banner">
       <span style={{fontSize:24}}>🔔</span>
       <div style={{flex:1}}>
-        <p className="notif-banner-title">Enable reminders</p>
+        <p className="notif-banner-title">{t("notif.enableTitle")}</p>
         <p className="notif-banner-sub">
-          {denied ? "Notifications blocked — enable in browser settings" : "Get notified when it's time for your habits"}
+          {denied ? t("notif.blockedSub") : t("notif.enableSub")}
         </p>
       </div>
-      {!denied && <button className="notif-allow-btn" onClick={onAllow}>Allow</button>}
+      {!denied && <button className="notif-allow-btn" onClick={onAllow}>{t("notif.allow")}</button>}
       <button className="notif-dismiss-btn" onClick={()=>setDismissed(true)}>✕</button>
     </div>
   );
@@ -1311,6 +1488,7 @@ function NotifBanner({ onAllow, denied }) {
 // REMINDERS TAB
 // ═══════════════════════════════════════════════════════════════
 function RemindersTab({ habits, notifPerm, gcalStatus, onRequestPermission, onEditHabit, onCreateGcal, onTestNotif }) {
+  const { t } = useT();
   return (
     <div style={{padding:"0 16px"}}>
       <div className="reminder-status-card">
@@ -1318,38 +1496,39 @@ function RemindersTab({ habits, notifPerm, gcalStatus, onRequestPermission, onEd
           <span style={{fontSize:28}}>{notifPerm==="granted"?"🔔":"🔕"}</span>
           <div>
             <p style={{fontWeight:800,fontSize:14,color:"var(--text)"}}>
-              {notifPerm==="granted" ? "Notifications enabled ✅" : notifPerm==="denied" ? "Notifications blocked ❌" : "Notifications not enabled"}
+              {notifPerm==="granted" ? t("reminders.enabledTitle") : notifPerm==="denied" ? t("reminders.blockedTitle") : t("reminders.notEnabledTitle")}
             </p>
             <p style={{fontSize:12,color:"var(--text-2)",marginTop:2}}>
-              {notifPerm==="granted" ? "You will receive in-app alerts for enabled habits" : notifPerm==="denied" ? "Open browser settings → Notifications → Allow this site" : "Tap below to enable habit reminders"}
+              {notifPerm==="granted" ? t("reminders.enabledSub") : notifPerm==="denied" ? t("reminders.blockedSub") : t("reminders.notEnabledSub")}
             </p>
           </div>
         </div>
         {notifPerm !== "granted" && notifPerm !== "denied" && (
           <button className="submit-btn" style={{marginBottom:0,marginTop:8}} onClick={onRequestPermission}>
-            🔔 Enable Notifications
+            {t("reminders.enableBtn")}
           </button>
         )}
       </div>
-      <p className="section-label" style={{padding:0,marginTop:20,marginBottom:12}}>Habit Reminders</p>
+      <p className="section-label" style={{padding:0,marginTop:20,marginBottom:12}}>{t("reminders.habitReminders")}</p>
       {habits.length === 0 ? (
-        <div className="habit-empty"><span className="habit-empty-icon">⏰</span><p className="habit-empty-title">No habits yet</p><p className="habit-empty-sub">Add a habit first, then set reminders here.</p></div>
+        <div className="habit-empty"><span className="habit-empty-icon">⏰</span><p className="habit-empty-title">{t("reminders.noHabits")}</p><p className="habit-empty-sub">{t("reminders.addFirst")}</p></div>
       ) : habits.map(h => (
         <ReminderCard key={h.id} habit={h} notifPerm={notifPerm} gcalStatus={gcalStatus[h.id]}
           onEdit={()=>onEditHabit(h)} onCreateGcal={()=>onCreateGcal(h)} onTest={()=>onTestNotif(h)}/>
       ))}
       <div style={{background:"var(--surface)",borderRadius:"var(--r-lg)",padding:"16px",marginTop:14,boxShadow:"var(--s-sm)"}}>
-        <p style={{fontWeight:800,fontSize:13,color:"var(--text)",marginBottom:8}}>📅 Google Calendar Reminders</p>
+        <p style={{fontWeight:800,fontSize:13,color:"var(--text)",marginBottom:8}}>{t("reminders.gcalTitle")}</p>
         <p style={{fontSize:12,color:"var(--text-2)",lineHeight:1.6,marginBottom:10}}>
-          Google Calendar reminders work even when your phone is off. Enable a reminder on any habit above, then tap &quot;Add to Google Calendar&quot; to create a recurring daily event with alerts.
+          {t("reminders.gcalDesc")}
         </p>
-        <p style={{fontSize:11,color:"var(--text-3)"}}>Reminders are set to your Bangkok timezone (UTC+7)</p>
+        <p style={{fontSize:11,color:"var(--text-3)"}}>{t("reminders.gcalTimezone")}</p>
       </div>
     </div>
   );
 }
 
 function ReminderCard({ habit, notifPerm, gcalStatus, onEdit, onCreateGcal, onTest }) {
+  const { t } = useT();
   const { name, icon, color, reminderEnabled, reminderTime } = habit;
   const hasReminder = reminderEnabled && reminderTime;
   return (
@@ -1359,31 +1538,33 @@ function ReminderCard({ habit, notifPerm, gcalStatus, onEdit, onCreateGcal, onTe
         <div style={{flex:1}}>
           <p style={{fontWeight:700,fontSize:14,color:"var(--text)"}}>{name}</p>
           <p style={{fontSize:12,color:hasReminder?"var(--green)":"var(--text-3)",marginTop:2,fontWeight:600}}>
-            {hasReminder ? `⏰ ${reminderTime} daily` : "No reminder set"}
+            {hasReminder ? t("reminders.daily",{time:reminderTime}) : t("reminders.noReminder")}
           </p>
         </div>
-        <button className="reminder-edit-btn" onClick={onEdit}>✏️ Edit</button>
+        <button className="reminder-edit-btn" onClick={onEdit}>✏️ {t("common.edit")}</button>
       </div>
       {hasReminder && (
         <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
           {notifPerm==="granted" && (
-            <button className="reminder-action-btn notif-test-btn" onClick={onTest}>🔔 Test alert</button>
+            <button className="reminder-action-btn notif-test-btn" onClick={onTest}>{t("reminders.testAlert")}</button>
           )}
           <button
             className={`reminder-action-btn gcal-btn${gcalStatus==="creating"?" loading":""}`}
             onClick={onCreateGcal} disabled={gcalStatus==="creating"}>
-            📅 {gcalStatus==="creating" ? "Opening…" : gcalStatus==="done" ? "Added ✅" : "Add to Google Calendar"}
+            {gcalStatus==="creating" ? t("reminders.opening") : gcalStatus==="done" ? t("reminders.added") : t("reminders.addToGcal")}
           </button>
         </div>
       )}
-      {!hasReminder && <button className="reminder-set-btn" onClick={onEdit}>+ Set reminder time</button>}
+      {!hasReminder && <button className="reminder-set-btn" onClick={onEdit}>{t("reminders.setReminderTime")}</button>}
     </div>
   );
 }
 
 function EmptyHabits() {
-  return <div className="habit-empty anim-3"><span className="habit-empty-icon">🌱</span><p className="habit-empty-title">No habits yet</p><p className="habit-empty-sub">Tap + to add your first habit!</p></div>;
+  const { t } = useT();
+  return <div className="habit-empty anim-3"><span className="habit-empty-icon">🌱</span><p className="habit-empty-title">{t("empty.noHabits")}</p><p className="habit-empty-sub">{t("empty.tapPlus")}</p></div>;
 }
 function Spinner() {
-  return <div className="status-screen"><div className="loading-dot"/><p className="status-msg">Loading…</p></div>;
+  const { t } = useT();
+  return <div className="status-screen"><div className="loading-dot"/><p className="status-msg">{t("common.loading")}</p></div>;
 }
