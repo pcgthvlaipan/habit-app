@@ -1,6 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
-// App.jsx — Habit App by Tam  v9
-// New in v9:
+// App.jsx — Habit App by Tam  v10
+// New in v10:
+//   • Backend moved from Firebase to Supabase (auth + Postgres)
+//   • Password-reset flow shows a "set new password" screen
+// v9:
 //   • EN/TH language toggle (default Thai) — see src/i18n.jsx
 //   • Registration captures name + email + department (dropdown)
 //   • Admin-managed department list (Settings tab)
@@ -13,7 +16,8 @@ import { useState, useEffect, useMemo } from "react";
 import "./App.css";
 import {
   loginUser, registerUser, logoutUser,
-  subscribeToAuth, fetchUser, ensureUserDoc,
+  subscribeToAuth, fetchUser,
+  sendPasswordReset, updatePassword,
   subscribeToHabits, computeSummary,
   logHabitToday, logHabitDate, addHabit, editHabit, deleteHabit,
   HABIT_ICON_OPTIONS, WEEK_DAYS,
@@ -22,9 +26,7 @@ import {
   DEFAULT_DEPARTMENTS, fetchDepartments, subscribeToDepartments,
   addDepartment, removeDepartment,
   bangkokKey,
-  auth,  // ← we need this for sendPasswordResetEmail
-} from "./firebase/habitService";
-import { sendPasswordResetEmail } from "firebase/auth";
+} from "./services/habitService";
 import { useT } from "./i18n";
 import { badgeText, LANGS, MONTH_NAMES, WEEKDAY_LABELS } from "./i18n-util";
 import {
@@ -81,12 +83,17 @@ function LangToggle({ dark = true }) {
 // ═══════════════════════════════════════════════════════════════
 export default function App() {
   const [authUser, setAuthUser] = useState(undefined);
-  useEffect(() => subscribeToAuth(u => {
-    // On logout, kill every pending reminder timer so they don't fire for a
-    // signed-out user (or the next user to sign in on this device).
-    if (!u) cancelAllReminders();
-    setAuthUser(u);
-  }), []);
+  const [recovery, setRecovery] = useState(false);
+  useEffect(() => subscribeToAuth(
+    u => {
+      // On logout, kill every pending reminder timer so they don't fire for a
+      // signed-out user (or the next user to sign in on this device).
+      if (!u) cancelAllReminders();
+      setAuthUser(u);
+    },
+    () => setRecovery(true),   // arrived via a password-reset link
+  ), []);
+  if (recovery) return <ResetPasswordScreen onDone={() => setRecovery(false)} />;
   if (authUser === undefined) return <Spinner />;
   if (!authUser) return <AuthScreen />;
   return <Dashboard authUser={authUser} />;
@@ -131,10 +138,8 @@ function AuthScreen() {
       if (mode === "login") {
         await loginUser(email.trim(), pass);
       } else {
-        const c = await registerUser(email.trim(), pass);
-        await ensureUserDoc(c.user.uid, {
+        await registerUser(email.trim(), pass, {
           name: name.trim(),
-          email: email.trim(),
           department,
         });
       }
@@ -144,6 +149,7 @@ function AuthScreen() {
         e.code === "auth/wrong-password"      ? t("auth.errWrongPass") :
         e.code === "auth/email-already-in-use"? t("auth.errEmailInUse") :
         e.code === "auth/invalid-credential"  ? t("auth.errInvalidCred") :
+        e.code === "auth/weak-password"       ? t("auth.errPassLen") :
         e.message
       );
     } finally { setLoading(false); }
@@ -155,7 +161,7 @@ function AuthScreen() {
     if (!email.trim()) { setError(t("auth.errEnterEmail")); return; }
     setLoading(true);
     try {
-      await sendPasswordResetEmail(auth, email.trim());
+      await sendPasswordReset(email.trim());
       setForgotSent(true);
     } catch (e) {
       setError(
@@ -284,6 +290,70 @@ function AuthScreen() {
       </div>
 
       <p className="auth-footer">{t("auth.footerSecure")}</p>
+    </div></div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// RESET PASSWORD  (shown when the user arrives via a reset link)
+// ═══════════════════════════════════════════════════════════════
+function ResetPasswordScreen({ onDone }) {
+  const { t } = useT();
+  const [pass, setPass]       = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError]     = useState("");
+  const [ok, setOk]           = useState(false);
+
+  async function submit() {
+    setError("");
+    if (pass.length < 6)   { setError(t("auth.errPassLen")); return; }
+    if (pass !== confirm)  { setError(t("auth.errPassMismatch")); return; }
+    setLoading(true);
+    try {
+      await updatePassword(pass);
+      setOk(true);
+      setTimeout(onDone, 1400);
+    } catch (e) {
+      setError(e.message);
+    } finally { setLoading(false); }
+  }
+
+  return (
+    <div className="shell"><div className="phone">
+      <div className="auth-hero">
+        <div className="auth-hero-orb orb1"/><div className="auth-hero-orb orb2"/>
+        <div style={{position:"absolute",top:14,right:14,zIndex:2}}><LangToggle/></div>
+        <div className="auth-logo">h</div>
+        <p className="auth-app-name">{t("auth.appName")}</p>
+      </div>
+      <div className="auth-card">
+        <p className="auth-title">{t("auth.setNewTitle")}</p>
+        <p className="auth-sub">{t("auth.setNewSub")}</p>
+
+        {ok ? (
+          <p className="auth-error" style={{background:"#F0FFF6",color:"#34C77B"}}>✓ {t("auth.passwordUpdated")}</p>
+        ) : (
+          <>
+            {error && <p className="auth-error">⚠️ {error}</p>}
+            <div className="field-wrap">
+              <label className="field-label">{t("auth.newPassword")}</label>
+              <input className="field-input" type="password" value={pass}
+                placeholder={t("auth.passwordPlaceholder")}
+                onChange={e => setPass(e.target.value)} autoFocus/>
+            </div>
+            <div className="field-wrap">
+              <label className="field-label">{t("auth.confirmPassword")}</label>
+              <input className="field-input" type="password" value={confirm}
+                onChange={e => setConfirm(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && submit()}/>
+            </div>
+            <button className="submit-btn" onClick={submit} disabled={loading}>
+              {loading ? t("auth.updating") : t("auth.updatePasswordBtn")}
+            </button>
+          </>
+        )}
+      </div>
     </div></div>
   );
 }
