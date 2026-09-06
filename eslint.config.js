@@ -5,8 +5,8 @@ import reactHooks from 'eslint-plugin-react-hooks'
 import reactRefresh from 'eslint-plugin-react-refresh'
 
 export default [
-  // dist/ is build output; App_reminder_badge.* is an unused backup copy of App.jsx kept for reference.
-  { ignores: ['dist/**', 'src/App_reminder_badge.jsx'] },
+  // dist/ is build output.
+  { ignores: ['dist/**'] },
   {
     files: ['**/*.{js,jsx}'],
     languageOptions: {

@@ -12,6 +12,13 @@ dist
 dist-ssr
 *.local
 
+# Env / secrets
+.env
+.env.*
+!.env.example
+firebase-service-account*.json
+*-service-account*.json
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
