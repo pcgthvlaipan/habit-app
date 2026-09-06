@@ -5,9 +5,10 @@ import reactHooks from 'eslint-plugin-react-hooks'
 import reactRefresh from 'eslint-plugin-react-refresh'
 
 export default [
+  // dist/ is build output; App_reminder_badge.* is an unused backup copy of App.jsx kept for reference.
+  { ignores: ['dist/**', 'src/App_reminder_badge.jsx'] },
   {
     files: ['**/*.{js,jsx}'],
-    ignores: ['dist'],
     languageOptions: {
       ecmaVersion: 2020,
       globals: globals.browser,
@@ -29,6 +30,11 @@ export default [
       ...react.configs['jsx-runtime'].rules,
       ...reactHooks.configs.recommended.rules,
       'react/jsx-no-target-blank': 'off',
+      // The codebase never adopted prop-types; disabling avoids hundreds of noise errors.
+      'react/prop-types': 'off',
+      // This app leans on defensive `try { … } catch {}` for flaky iOS Safari APIs.
+      'no-empty': ['error', { allowEmptyCatch: true }],
+      'no-unused-vars': ['error', { caughtErrors: 'none' }],
       'react-refresh/only-export-components': [
         'warn',
         { allowConstantExport: true },

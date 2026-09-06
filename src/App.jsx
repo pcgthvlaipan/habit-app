@@ -2,7 +2,7 @@
 // App.jsx — Habit App by Tam  v8
 // New in v8: Calendar + stats show partial completion visually
 // ═══════════════════════════════════════════════════════════════
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo } from "react";
 import "./App.css";
 import {
   loginUser, registerUser, logoutUser,
@@ -11,6 +11,7 @@ import {
   logHabitToday, logHabitDate, addHabit, editHabit, deleteHabit,
   HABIT_ICON_OPTIONS, WEEK_DAYS,
   REWARD_BADGES, computeEarnedBadges,
+  bangkokKey,
   auth,  // ← we need this for sendPasswordResetEmail
 } from "./firebase/habitService";
 import { sendPasswordResetEmail } from "firebase/auth";
@@ -19,6 +20,7 @@ import {
   showTestNotification,
   scheduleDailyNotification,
   cancelNotification,
+  cancelAllReminders,
   rescheduleAllReminders,
   openGoogleCalendar,
 } from "./reminderService";
@@ -33,7 +35,12 @@ function getGreeting() {
 // ═══════════════════════════════════════════════════════════════
 export default function App() {
   const [authUser, setAuthUser] = useState(undefined);
-  useEffect(() => subscribeToAuth(setAuthUser), []);
+  useEffect(() => subscribeToAuth(u => {
+    // On logout, kill every pending reminder timer so they don't fire for a
+    // signed-out user (or the next user to sign in on this device).
+    if (!u) cancelAllReminders();
+    setAuthUser(u);
+  }), []);
   if (authUser === undefined) return <Spinner />;
   if (!authUser) return <AuthScreen />;
   return <Dashboard authUser={authUser} />;
@@ -127,7 +134,7 @@ function AuthScreen() {
               <div style={{textAlign:"center",padding:"8px 0 16px"}}>
                 <p style={{fontSize:13,color:"var(--text-2)",lineHeight:1.6,marginBottom:16}}>
                   Click the link in the email to set a new password.
-                  Check your spam folder if you don't see it.
+                  Check your spam folder if you don&apos;t see it.
                 </p>
                 <button className="submit-btn" onClick={goToSignIn}>← Back to sign in</button>
               </div>
@@ -231,29 +238,16 @@ function Dashboard({ authUser }) {
   const [notifPerm,setNotifPerm]   = useState(()=>{try{return typeof Notification!=="undefined"?Notification.permission:"unsupported"}catch(e){return "unsupported"}});
   const [gcalStatus,setGcalStatus] = useState({});
   const uid = authUser.uid;
-  // Track optimistic updates — ignore Firestore re-fetch for 3 seconds after a log
-  const pendingLogRef = useRef(null);
 
   useEffect(() => { fetchUser(uid).then(setUser).catch(e=>setError(e.message)); },[uid]);
+  // subscribeToHabits now listens on each habit's `logs` subcollection too, so log
+  // writes propagate here (with Firestore latency compensation applying our own
+  // writes almost immediately). The fragile "keep optimistic _rawLogs if longer"
+  // guard is gone — `fresh` is always the source of truth. handleLog still does an
+  // optimistic setHabits for instant tap feedback in the gap before the listener fires.
   useEffect(() => subscribeToHabits(uid,
     fresh => {
-      // If we just made an optimistic update, merge Firestore data carefully
-      // to preserve our _rawLogs until Firestore catches up
-      if (pendingLogRef.current && Date.now() - pendingLogRef.current < 3000) {
-        // Merge: use fresh data but keep our optimistic _rawLogs for updated habits
-        setHabits(prev => fresh.map(fh => {
-          const ph = prev.find(h => h.id === fh.id);
-          // If this habit has our optimistic _rawLogs and Firestore doesn't have
-          // the new log yet, keep our optimistic version
-          if (ph && ph._rawLogs?.length > fh._rawLogs?.length) {
-            return { ...fh, _rawLogs: ph._rawLogs,
-              todayStatus: ph.todayStatus, todayPartial: ph.todayPartial };
-          }
-          return fh;
-        }));
-      } else {
-        setHabits(fresh);
-      }
+      setHabits(fresh);
       setSummary(computeSummary(fresh));
       setSelected(p => p ? (fresh.find(h=>h.id===p.id)??fresh[0]??null) : (fresh[0]??null));
       setLoading(false);
@@ -261,18 +255,32 @@ function Dashboard({ authUser }) {
     e => { setError(e.message); setLoading(false); }
   ),[uid]);
 
+  // Cancel every pending reminder timer when the dashboard unmounts (logout / nav away).
+  useEffect(() => cancelAllReminders, []);
+
+  // Only reschedule reminders when something that actually affects a reminder
+  // changes — NOT on every log tap (which produces a fresh `habits` array).
+  const reminderSig = useMemo(
+    () => JSON.stringify(habits.map(h => ({
+      id: h.id, reminderEnabled: h.reminderEnabled, reminderTime: h.reminderTime,
+      name: h.name, icon: h.icon,
+    }))),
+    [habits]
+  );
   useEffect(() => {
     if (habits.length > 0) rescheduleAllReminders(habits);
-  }, [habits]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reminderSig]);
 
   const earnedBadges = useMemo(() => computeEarnedBadges(habits, summary), [habits, summary]);
 
   // ── v7: handleLog now supports partial completion ────────────
   function handleLog(hid, status, partial) {
-    // Get today's Bangkok date key (must match habitService.bangkokKey logic)
     const now = new Date();
-    const bkk = new Date(now.getTime() + 7 * 60 * 60 * 1000);
-    const todayKey = `${bkk.getUTCFullYear()}-${String(bkk.getUTCMonth()+1).padStart(2,"0")}-${String(bkk.getUTCDate()).padStart(2,"0")}`;
+    const todayKey = bangkokKey(now);
+    // A partial-done (pct < 100) is surfaced as "partial", matching computeHabitStats.
+    const isPartial = status === "done" && partial && (partial.pct ?? 100) < 100;
+    const optimisticStatus = status === "none" ? "none" : isPartial ? "partial" : status;
 
     setHabits(prev => prev.map(h => {
       if (h.id !== hid) return h;
@@ -280,14 +288,13 @@ function Dashboard({ authUser }) {
       // Update _rawLogs immediately so calendar + stats reflect the change
       let newRawLogs = (h._rawLogs ?? []).filter(l => {
         // Remove old log for today if exists
-        const ld = l.date?.toDate ? l.date.toDate() : new Date(l.date?.seconds*1000 ?? l.date);
-        const lBkk = new Date(ld.getTime() + 7*60*60*1000);
-        const lKey = `${lBkk.getUTCFullYear()}-${String(lBkk.getUTCMonth()+1).padStart(2,"0")}-${String(lBkk.getUTCDate()).padStart(2,"0")}`;
-        return lKey !== todayKey;
+        const ld = l.date?.toDate
+          ? l.date.toDate()
+          : new Date(l.date?.seconds != null ? l.date.seconds * 1000 : l.date);
+        return bangkokKey(ld) !== todayKey;
       });
 
       if (status !== "none") {
-        // Add the new log entry
         newRawLogs = [...newRawLogs, {
           date: { seconds: Math.floor(now.getTime() / 1000) },
           status,
@@ -295,11 +302,9 @@ function Dashboard({ authUser }) {
         }];
       }
 
-      // Recompute stats with updated logs
-      const { computeHabitStats: _ } = {}; // stats recomputed by Firestore subscription
       return {
         ...h,
-        todayStatus:  status === "none" ? "none" : status,
+        todayStatus:  optimisticStatus,
         todayPartial: partial ?? null,
         _rawLogs:     newRawLogs,
       };
@@ -309,17 +314,12 @@ function Dashboard({ authUser }) {
       if (!prev) return prev;
       const h       = habits.find(x => x.id === hid);
       const wasDone = h?.todayStatus === "done";
-      const isDone  = status === "done";
+      const isDone  = status === "done" && !isPartial;  // partial is not a full "done"
       const delta   = isDone && !wasDone ? 1 : !isDone && wasDone ? -1 : 0;
       return { ...prev, doneToday: Math.max(0, prev.doneToday + delta) };
     });
 
-    pendingLogRef.current = Date.now();  // mark optimistic update time
     logHabitToday(uid, hid, status, partial)
-      .then(() => {
-        // After save, clear pending flag so next Firestore update is accepted
-        setTimeout(() => { pendingLogRef.current = null; }, 1000);
-      })
       .catch(e => console.error("Save failed:", e.message));
   }
 
@@ -371,75 +371,13 @@ function Dashboard({ authUser }) {
   // Always derive selected from latest habits array for instant updates
   const selectedHabit = selected ? (habits.find(h => h.id === selected.id) ?? selected) : null;
 
-  // Recompute chartData directly from _rawLogs for instant updates
-  const chartData = useMemo(() => {
-    if (!selectedHabit) return [];
-    const rawLogs = selectedHabit._rawLogs ?? [];
-    const statusMap = {}, partialMap = {};
-    rawLogs.forEach(log => {
-      let d;
-      if (log.date?.toDate) d = log.date.toDate();
-      else if (log.date?.seconds) d = new Date(log.date.seconds * 1000);
-      else d = new Date(log.date ?? 0);
-      const bkk = new Date(d.getTime() + 7*60*60*1000);
-      const p = n => String(n).padStart(2,"0");
-      const key = `${bkk.getUTCFullYear()}-${p(bkk.getUTCMonth()+1)}-${p(bkk.getUTCDate())}`;
-      statusMap[key] = log.status;
-      if (log.partial) partialMap[key] = log.partial;
-    });
-    const days = period === "7" ? 7 : 30;
-    const today = new Date();
-    return Array.from({length: days}, (_, i) => {
-      const d = new Date(today);
-      d.setDate(d.getDate() - (days - 1 - i));
-      const bkk = new Date(d.getTime() + 7*60*60*1000);
-      const p = n => String(n).padStart(2,"0");
-      const key = `${bkk.getUTCFullYear()}-${p(bkk.getUTCMonth()+1)}-${p(bkk.getUTCDate())}`;
-      const DAY_LABELS = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
-      const WEEK_DAYS  = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
-      const dn = DAY_LABELS[d.getDay()];
-      const scheduled = selectedHabit.frequency === "daily" || (selectedHabit.scheduledDays ?? WEEK_DAYS).includes(dn);
-      const status  = statusMap[key] ?? (scheduled ? "none" : "not-scheduled");
-      const partial = partialMap[key] ?? null;
-      const label   = days <= 7 ? dn.slice(0,3) : `${d.getDate()}`;
-      return { day: label, date: key, val: status==="done"?1:0, status, partial, scheduled };
-    });
-  }, [selectedHabit?._rawLogs, period]);
-
-  // Recompute weeklyDays from _rawLogs for instant updates
-  const weeklyDays = useMemo(() => {
-    if (!selectedHabit) return [];
-    const rawLogs = selectedHabit._rawLogs ?? [];
-    const statusMap = {}, partialMap = {};
-    rawLogs.forEach(log => {
-      let d;
-      if (log.date?.toDate) d = log.date.toDate();
-      else if (log.date?.seconds) d = new Date(log.date.seconds * 1000);
-      else d = new Date(log.date ?? 0);
-      const bkk = new Date(d.getTime() + 7*60*60*1000);
-      const p = n => String(n).padStart(2,"0");
-      const key = `${bkk.getUTCFullYear()}-${p(bkk.getUTCMonth()+1)}-${p(bkk.getUTCDate())}`;
-      statusMap[key] = log.status;
-      if (log.partial) partialMap[key] = log.partial;
-    });
-    const WEEK_DAYS  = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
-    const today = new Date();
-    const dow = today.getDay();
-    const monOff = (dow + 6) % 7;
-    const mon = new Date(today);
-    mon.setDate(today.getDate() - monOff);
-    return WEEK_DAYS.map((label, i) => {
-      const d = new Date(mon);
-      d.setDate(mon.getDate() + i);
-      const bkk = new Date(d.getTime() + 7*60*60*1000);
-      const p = n => String(n).padStart(2,"0");
-      const key = `${bkk.getUTCFullYear()}-${p(bkk.getUTCMonth()+1)}-${p(bkk.getUTCDate())}`;
-      const sched = selectedHabit.frequency === "daily" || (selectedHabit.scheduledDays ?? WEEK_DAYS).includes(label);
-      const status  = statusMap[key] ?? "none";
-      const partial = partialMap[key] ?? null;
-      return { day: label, done: status==="done", scheduled: sched, partial };
-    });
-  }, [selectedHabit?._rawLogs]);
+  // subscribeToHabits now delivers live log updates, so the stats computed by
+  // computeHabitStats (single Bangkok date basis) are always fresh — no need to
+  // re-derive chart/weekly data here with a second, drift-prone timezone impl.
+  const chartData = period === "7"
+    ? (selectedHabit?.chartData7d ?? [])
+    : (selectedHabit?.chartData30d ?? []);
+  const weeklyDays = selectedHabit?.weeklyDays ?? [];
 
   if (loading) return <Spinner/>;
   if (error)   return <div className="status-screen"><p style={{fontSize:36}}>⚠️</p><p className="status-msg">{error}</p></div>;
@@ -466,7 +404,7 @@ function Dashboard({ authUser }) {
           onEdit={h=>setEditing(h)} onDelete={handleDelete}/>
         {selectedHabit&&<ProgressChart habit={selectedHabit} chartData={chartData} period={period} onPeriodChange={setPeriod}/>}
         {weeklyDays?.length>0&&<WeeklySummary days={weeklyDays}/>}
-        <AICoachCard habits={habits} summary={summary} earnedBadges={earnedBadges}/>
+        <AICoachCard summary={summary} earnedBadges={earnedBadges}/>
       </>}
 
       {tab==="calendar"&&<>
@@ -490,14 +428,14 @@ function Dashboard({ authUser }) {
       </>}
 
       {tab==="reminders"&&<RemindersTab
-        habits={habits} notifPerm={notifPerm} gcalStatus={gcalStatus} uid={uid}
+        habits={habits} notifPerm={notifPerm} gcalStatus={gcalStatus}
         onRequestPermission={handleRequestNotifPermission}
         onEditHabit={h=>setEditing(h)}
         onCreateGcal={handleCreateGcalReminder}
         onTestNotif={h=>showTestNotification(h.name, h.icon)}
       />}
 
-      {tab==="badges"&&<BadgesTab habits={habits} summary={summary} earnedBadges={earnedBadges}/>}
+      {tab==="badges"&&<BadgesTab earnedBadges={earnedBadges}/>}
 
       <div style={{height:100}}/>
       <button className="fab" onClick={()=>setShowAdd(true)} title="Add habit"><span className="fab-icon">+</span></button>
@@ -589,7 +527,9 @@ function HabitList({habits,selectedId,onSelect,onLog,onEdit,onDelete}) {
 // ═══════════════════════════════════════════════════════════════
 function HabitCard({habit,selected,onSelect,onLog,onEdit,onDelete}) {
   const {id,todayStatus,todayPartial,color,icon,name,frequency,scheduledDays,streak,reminderEnabled,reminderTime} = habit;
-  const done    = todayStatus === "done";
+  // "partial" counts as a logged completion for the button/bar UI (it still isn't a
+  // full "done" for stats). Tapping ✓ again clears the day.
+  const done    = todayStatus === "done" || todayStatus === "partial";
   const missed  = todayStatus === "missed";
   const notSched= todayStatus === "not-scheduled";
   const [menu,setMenu]           = useState(false);
@@ -974,17 +914,8 @@ function HabitFormModal({title,initial,onSave,onClose}) {
 // CALENDAR VIEW
 // ═══════════════════════════════════════════════════════════════
 function CalendarView({habit,uid}) {
-  // Force Bangkok timezone (UTC+7) for correct date display
-  // CodeSandbox preview browser may run in a different timezone
-  function bangkokDateStr(date = new Date()) {
-    // Add UTC+7 offset manually
-    const bkk = new Date(date.getTime() + 7 * 60 * 60 * 1000);
-    const pad = n => String(n).padStart(2,"0");
-    return `${bkk.getUTCFullYear()}-${pad(bkk.getUTCMonth()+1)}-${pad(bkk.getUTCDate())}`;
-  }
   const today    = new Date();
-  const pad = n => String(n).padStart(2,"0");
-  const todayStr = bangkokDateStr();  // Use Bangkok time for "today" highlight
+  const todayStr = bangkokKey();  // Bangkok "today" for the highlight
   const [year,setYear]     = useState(today.getFullYear());
   const [month,setMonth]   = useState(today.getMonth());
   const [localLog, setLocalLog]         = useState({});
@@ -992,8 +923,7 @@ function CalendarView({habit,uid}) {
 
   const FULL_MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
-  // Build a map of date → partial data from raw logs
-  // Uses Bangkok UTC+7 to match how keys are stored
+  // date key → partial object, keyed on the same Bangkok basis as stored logs.
   const partialMap = useMemo(() => {
     const map = {};
     if (!habit?._rawLogs) return map;
@@ -1001,13 +931,8 @@ function CalendarView({habit,uid}) {
       let d;
       if (log.date?.toDate) d = log.date.toDate();
       else if (log.date?.seconds) d = new Date(log.date.seconds * 1000);
-      else if (typeof log.date === "string") d = new Date(log.date);
       else d = new Date(log.date);
-      // Use Bangkok UTC+7 offset
-      const bkk = new Date(d.getTime() + 7 * 60 * 60 * 1000);
-      const p = n => String(n).padStart(2, "0");
-      const key = `${bkk.getUTCFullYear()}-${p(bkk.getUTCMonth()+1)}-${p(bkk.getUTCDate())}`;
-      if (log.partial) map[key] = log.partial;
+      if (log.partial) map[bangkokKey(d)] = log.partial;
     });
     return map;
   }, [habit]);
@@ -1022,7 +947,7 @@ function CalendarView({habit,uid}) {
       status:  localLog[d.date] !== undefined ? localLog[d.date] : d.status,
       partial: localPartial[d.date] !== undefined ? localPartial[d.date] : (partialMap[d.date] ?? null),
     }));
-  }, [habit, year, month, localLog, partialMap]);
+  }, [habit, year, month, localLog, localPartial, partialMap]);
 
   const firstDay = new Date(year, month, 1).getDay();
   const offset   = (firstDay + 6) % 7;
@@ -1038,6 +963,10 @@ function CalendarView({habit,uid}) {
   function handleDayLog(dateStr, currentStatus, newStatus) {
     const resolvedStatus = currentStatus === newStatus ? "none" : newStatus;
     setLocalLog(prev => ({ ...prev, [dateStr]: resolvedStatus }));
+    // Marking a day plain "done" from the calendar clears any stored partial
+    // (see logHabitDate) — mirror that optimistically so the cell doesn't keep
+    // showing an "x%" badge until the Firestore snapshot lands.
+    if (resolvedStatus === "done") setLocalPartial(prev => ({ ...prev, [dateStr]: null }));
     logHabitDate(uid, habit.id, dateStr, resolvedStatus)
       .catch(e => {
         console.error("Calendar save failed:", e.message);
@@ -1213,7 +1142,7 @@ function WeeklySummary({days}) {
 // ═══════════════════════════════════════════════════════════════
 // AI COACH
 // ═══════════════════════════════════════════════════════════════
-function AICoachCard({habits,summary,earnedBadges}) {
+function AICoachCard({summary,earnedBadges}) {
   const rate   = summary?.successRate ?? 0;
   const streak = summary?.currentStreak ?? 0;
   const done   = summary?.doneToday ?? 0;
@@ -1265,7 +1194,7 @@ function AICoachCard({habits,summary,earnedBadges}) {
 // ═══════════════════════════════════════════════════════════════
 // BADGES TAB
 // ═══════════════════════════════════════════════════════════════
-function BadgesTab({habits,summary,earnedBadges}) {
+function BadgesTab({earnedBadges}) {
   const earnedIds = new Set(earnedBadges.map(b=>b.id));
   return (
     <div style={{padding:"0 16px"}}>
@@ -1308,35 +1237,9 @@ function BadgesTab({habits,summary,earnedBadges}) {
 function HabitStatCard({habit}) {
   const {name,icon,color,streak,successRate,totalDone,totalLogged} = habit;
 
-  // Recompute chartData30d directly from _rawLogs for instant updates
-  const chartData30d = useMemo(() => {
-    const rawLogs = habit._rawLogs ?? [];
-    // Build maps from raw logs using Bangkok UTC+7
-    const statusMap = {}, partialMap = {};
-    rawLogs.forEach(log => {
-      let d;
-      if (log.date?.toDate) d = log.date.toDate();
-      else if (log.date?.seconds) d = new Date(log.date.seconds * 1000);
-      else d = new Date(log.date ?? 0);
-      const bkk = new Date(d.getTime() + 7*60*60*1000);
-      const p = n => String(n).padStart(2,"0");
-      const key = `${bkk.getUTCFullYear()}-${p(bkk.getUTCMonth()+1)}-${p(bkk.getUTCDate())}`;
-      statusMap[key] = log.status;
-      if (log.partial) partialMap[key] = log.partial;
-    });
-    // Build 30-day chart
-    const today = new Date();
-    return Array.from({length:30}, (_,i) => {
-      const d = new Date(today);
-      d.setDate(d.getDate() - (29 - i));
-      const bkk = new Date(d.getTime() + 7*60*60*1000);
-      const p = n => String(n).padStart(2,"0");
-      const key = `${bkk.getUTCFullYear()}-${p(bkk.getUTCMonth()+1)}-${p(bkk.getUTCDate())}`;
-      const status  = statusMap[key] ?? "none";
-      const partial = partialMap[key] ?? null;
-      return { day: d.getDate(), date: key, status, partial, val: status==="done" ? 1 : 0 };
-    });
-  }, [habit._rawLogs]);
+  // computeHabitStats already builds this on a single Bangkok date basis, and
+  // subscribeToHabits keeps it fresh via live log listeners.
+  const chartData30d = habit.chartData30d ?? [];
 
   return (
     <div className="stat-detail-card">
@@ -1407,7 +1310,7 @@ function NotifBanner({ onAllow, denied }) {
 // ═══════════════════════════════════════════════════════════════
 // REMINDERS TAB
 // ═══════════════════════════════════════════════════════════════
-function RemindersTab({ habits, notifPerm, gcalStatus, uid, onRequestPermission, onEditHabit, onCreateGcal, onTestNotif }) {
+function RemindersTab({ habits, notifPerm, gcalStatus, onRequestPermission, onEditHabit, onCreateGcal, onTestNotif }) {
   return (
     <div style={{padding:"0 16px"}}>
       <div className="reminder-status-card">
@@ -1438,7 +1341,7 @@ function RemindersTab({ habits, notifPerm, gcalStatus, uid, onRequestPermission,
       <div style={{background:"var(--surface)",borderRadius:"var(--r-lg)",padding:"16px",marginTop:14,boxShadow:"var(--s-sm)"}}>
         <p style={{fontWeight:800,fontSize:13,color:"var(--text)",marginBottom:8}}>📅 Google Calendar Reminders</p>
         <p style={{fontSize:12,color:"var(--text-2)",lineHeight:1.6,marginBottom:10}}>
-          Google Calendar reminders work even when your phone is off. Enable a reminder on any habit above, then tap "Add to Google Calendar" to create a recurring daily event with alerts.
+          Google Calendar reminders work even when your phone is off. Enable a reminder on any habit above, then tap &quot;Add to Google Calendar&quot; to create a recurring daily event with alerts.
         </p>
         <p style={{fontSize:11,color:"var(--text-3)"}}>Reminders are set to your Bangkok timezone (UTC+7)</p>
       </div>

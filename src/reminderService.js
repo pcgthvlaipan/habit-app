@@ -14,7 +14,7 @@ export async function requestNotificationPermission() {
   } catch(e) { return "unsupported"; }
 }
 
-export function showTestNotification(habitName, icon = "✨") {
+export function showTestNotification(habitName) {
   try {
     if (getNotifPermission() !== "granted") return;
     new Notification(`Habit Reminder: ${habitName}`, {
@@ -59,6 +59,19 @@ export function cancelNotification(habitId) {
       delete timers[habitId];
       sessionStorage.setItem("habitTimers", JSON.stringify(timers));
     }
+  } catch(e) {}
+}
+
+// Clear EVERY tracked reminder timer. Call on logout / Dashboard unmount so the
+// recursive setTimeout chains don't keep firing (and re-scheduling themselves)
+// for a signed-out user.
+export function cancelAllReminders() {
+  try {
+    const timers = JSON.parse(sessionStorage.getItem("habitTimers") || "{}");
+    for (const id of Object.keys(timers)) {
+      clearTimeout(timers[id]);
+    }
+    sessionStorage.removeItem("habitTimers");
   } catch(e) {}
 }
 

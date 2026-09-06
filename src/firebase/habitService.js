@@ -93,25 +93,29 @@ export function computeEarnedBadges(habits, summary) {
   return earned;
 }
 
-// ─── DATE KEY HELPERS ─────────────────────────────────────────
-// Use this for FIRESTORE TIMESTAMPS: converts UTC timestamp → Bangkok date string
-// e.g. "April 26 at 3:39am UTC" → "2026-04-26" (Bangkok UTC+7)
-function bangkokKey(utcDate = new Date()) {
-  const bkk = new Date(utcDate.getTime() + 7 * 60 * 60 * 1000);
+// ─── DATE HELPERS (Bangkok UTC+7, app-wide single basis) ──────
+// The whole app is hard-coded to Bangkok time. `bangkokDate` returns a Date whose
+// UTC getters (getUTCFullYear / getUTCDate / getUTCDay …) read out Bangkok
+// wall-clock values. ALL date logic — the date key AND the weekday — must be
+// derived from this same shifted instant so they can never disagree near midnight.
+export function bangkokDate(utcDate = new Date()) {
+  return new Date(utcDate.getTime() + 7 * 60 * 60 * 1000);
+}
+
+// UTC timestamp / Date → Bangkok "YYYY-MM-DD" key.
+// Used for BOTH Firestore timestamps and calendar/chart grid dates — there is no
+// separate "local" date basis, the app is Bangkok-only.
+export function bangkokKey(utcDate = new Date()) {
+  const bkk = bangkokDate(utcDate);
   const y = bkk.getUTCFullYear();
   const m = String(bkk.getUTCMonth() + 1).padStart(2, "0");
   const d = String(bkk.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
 }
 
-// Use this for CALENDAR/CHART GRID DATES: simple local date string
-// e.g. a Date object representing April 26 → "2026-04-26"
-// Do NOT apply bangkokKey here — these dates are already "local" calendar dates
-function dateKey(localDate) {
-  const y = localDate.getFullYear();
-  const m = String(localDate.getMonth() + 1).padStart(2, "0");
-  const d = String(localDate.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
+// Bangkok weekday label for a given instant ("Sun".."Sat").
+function bangkokDayLabel(utcDate) {
+  return DAY_LABELS[bangkokDate(utcDate).getUTCDay()];
 }
 
 // ─── CONSTANTS ────────────────────────────────────────────────
@@ -127,6 +131,18 @@ function toDate(v) {
   if (v instanceof Timestamp) return v.toDate();
   if (v?.seconds) return new Date(v.seconds * 1000);
   return new Date(v);
+}
+
+// ─── PARTIAL-COMPLETION CREDIT ───────────────────────────────
+// A "done" log only counts as a FULL completion when it has no partial object,
+// or the partial reached 100%. A partial log (pct < 100) is worth 0.5 credit
+// toward success rate / totals, and — see the streak loop — does NOT extend a streak.
+function isFullDone(status, partial) {
+  return status === "done" && (!partial || (partial.pct ?? 100) >= 100);
+}
+function doneCredit(status, partial) {
+  if (status !== "done") return 0;
+  return isFullDone(status, partial) ? 1 : 0.5;
 }
 
 // ─── STAT ENGINE ──────────────────────────────────────────────
@@ -152,31 +168,41 @@ function computeHabitStats(logs, habit) {
 
   const scheduled    = getScheduled(habit);
   const todayKey = bangkokKey(today);  // must match logMap keys (both Bangkok)
-  const todayDayName = DAY_LABELS[today.getDay()];
+  const todayDayName = bangkokDayLabel(today);  // weekday from the SAME Bangkok instant as todayKey
   const isSchedToday = habit.frequency === "daily" || scheduled.includes(todayDayName);
-  const todayStatus  = isSchedToday ? (logMap.get(todayKey) ?? "none") : "not-scheduled";
+  const rawToday     = isSchedToday ? (logMap.get(todayKey) ?? "none") : "not-scheduled";
+  const todayPartial = partialMap.get(todayKey) ?? null;
+  // A partial-done day is reported as "partial", never "done", so summary counters
+  // and badges never treat it as a full completion.
+  const todayStatus  = isFullDone(rawToday, todayPartial) || rawToday !== "done"
+    ? rawToday
+    : "partial";
 
-  // Streak
+  // Streak — a partial day BREAKS the streak (same as a miss). We deliberately do
+  // NOT give partials 0.5 credit here: a fractional "3.5-day streak" is meaningless
+  // to display, so the streak counts only consecutive FULL completions.
   let streak = 0;
   const chk = new Date(today);
-  if (todayStatus === "none") chk.setDate(chk.getDate() - 1);
+  if (rawToday === "none") chk.setDate(chk.getDate() - 1);
   for (let i = 0; i < 400; i++) {
-    const dn  = DAY_LABELS[chk.getDay()];
+    const dn  = bangkokDayLabel(chk);
     const key = bangkokKey(chk);  // must match logMap keys
     const ok  = habit.frequency === "daily" || scheduled.includes(dn);
     if (!ok) { chk.setDate(chk.getDate() - 1); continue; }
-    if (logMap.get(key) === "done") { streak++; chk.setDate(chk.getDate() - 1); }
+    if (isFullDone(logMap.get(key), partialMap.get(key))) { streak++; chk.setDate(chk.getDate() - 1); }
     else break;
   }
 
-  // Success rate — count partial as 0.5 credit
+  // Success rate — a partial (pct < 100) is worth 0.5, a full done 1. Weekday
+  // basis is the Bangkok-shifted date of the stored timestamp, matching logMap keys.
   const scheduledLogs = logs.filter(l => {
-    const dn = DAY_LABELS[toDate(l.date).getDay()];
+    const dn = bangkokDayLabel(toDate(l.date));
     return habit.frequency === "daily" || scheduled.includes(dn);
   });
-  const doneLogs = scheduledLogs.filter(l => l.status === "done").length;
+  const doneCreditTotal = scheduledLogs.reduce((s, l) => s + doneCredit(l.status, l.partial), 0);
+  const fullDoneLogs    = scheduledLogs.filter(l => isFullDone(l.status, l.partial)).length;
   const successRate = scheduledLogs.length > 0
-    ? Math.round((doneLogs / scheduledLogs.length) * 100) : 0;
+    ? Math.round((doneCreditTotal / scheduledLogs.length) * 100) : 0;
 
   // buildChart — now includes partial data + pct for bar height
   function buildChart(days) {
@@ -184,11 +210,11 @@ function computeHabitStats(logs, habit) {
       const d     = new Date(today);
       d.setDate(d.getDate() - (days - 1 - i));
       const key   = bangkokKey(d);  // must match logMap keys
-      const dn    = DAY_LABELS[d.getDay()];
+      const dn    = bangkokDayLabel(d);
       const sched = habit.frequency === "daily" || scheduled.includes(dn);
       const status  = logMap.get(key) ?? (sched ? "none" : "not-scheduled");
       const partial = partialMap.get(key) ?? null;
-      const label   = days <= 7 ? DAY_LABELS[d.getDay()].slice(0, 3) : `${d.getDate()}`;
+      const label   = days <= 7 ? dn.slice(0, 3) : `${d.getDate()}`;
       // val: 1 = full done, 0.01–0.99 = partial pct, 0 = not done
       const val = status === "done"
         ? (partial ? (partial.pct / 100) : 1)
@@ -203,20 +229,20 @@ function computeHabitStats(logs, habit) {
     const cur = new Date(startDate);
     while (cur <= endDate) {
       const key   = bangkokKey(cur);  // must match logMap keys
-      const dn    = DAY_LABELS[cur.getDay()];
+      const dn    = bangkokDayLabel(cur);
       const sched = habit.frequency === "daily" || scheduled.includes(dn);
       const status  = logMap.get(key) ?? (sched ? "none" : "not-scheduled");
       const partial = partialMap.get(key) ?? null;
       result.push({
-        date: key, day: cur.getDate(), dayName: dn,
-        month: cur.getMonth(), status, scheduled: sched, partial,
+        date: key, day: bangkokDate(cur).getUTCDate(), dayName: dn,
+        month: bangkokDate(cur).getUTCMonth(), status, scheduled: sched, partial,
       });
       cur.setDate(cur.getDate() + 1);
     }
     return result;
   }
 
-  const dow    = today.getDay();
+  const dow    = bangkokDate(today).getUTCDay();
   const monOff = (dow + 6) % 7;
   const mon    = new Date(today);
   mon.setDate(today.getDate() - monOff);
@@ -227,15 +253,18 @@ function computeHabitStats(logs, habit) {
     const sched = habit.frequency === "daily" || scheduled.includes(label);
     const status  = logMap.get(key) ?? (sched ? "none" : "not-scheduled");
     const partial = partialMap.get(key) ?? null;
+    // status stays raw "done" here; the WeeklySummary component detects partials
+    // via the `partial` object (partial.pct < 100).
     return { day: label, done: status === "done", scheduled: sched, partial };
   });
 
   return {
-    todayStatus, streak, successRate,
+    todayStatus, todayPartial, streak, successRate,
     chartData7d:  buildChart(7),
     chartData30d: buildChart(30),
     weeklyDays, buildChart, buildCalendar,
-    totalDone: doneLogs, totalLogged: scheduledLogs.length, logMap,
+    // totalDone = count of FULL completions; successRate already blends in partials at 0.5.
+    totalDone: fullDoneLogs, totalLogged: scheduledLogs.length, logMap,
   };
 }
 
@@ -251,40 +280,84 @@ export async function fetchUser(uid) {
 }
 
 export function subscribeToHabits(userId, onUpdate, onError) {
-  return onSnapshot(
+  // We need live updates for BOTH the habits collection AND every habit's `logs`
+  // subcollection, so a log write (which lives in a subcollection) re-renders the
+  // UI. We keep the habits-collection snapshot plus one `onSnapshot` per habit's
+  // logs query, and reconcile them into a single onUpdate() payload.
+  let habitDocs = [];                 // latest habit doc snapshots
+  const logsByHabit = new Map();      // hid -> array of log data
+  const logUnsubs   = new Map();      // hid -> unsubscribe fn
+  let closed = false;
+
+  function emit() {
+    if (closed) return;
+    try {
+      const habits = habitDocs.map((hDoc, idx) => {
+        const hd   = hDoc.data();
+        const logs = logsByHabit.get(hDoc.id) ?? [];
+        const obj  = {
+          id:              hDoc.id,
+          name:            hd.name            ?? "Unnamed",
+          frequency:       hd.frequency       ?? "daily",
+          scheduledDays:   hd.scheduledDays   ?? WEEK_DAYS,
+          icon:            hd.icon            ?? "✨",
+          color:           pickColor(idx),
+          createdAt:       toDate(hd.createdAt),
+          reminderEnabled: hd.reminderEnabled ?? false,
+          reminderTime:    hd.reminderTime    ?? "08:00",
+          gcalEventId:     hd.gcalEventId     ?? null,
+          targetValue:     hd.targetValue     ?? null,
+          unit:            hd.unit            ?? null,
+        };
+        const stats = computeHabitStats(logs, obj);
+        return { ...obj, ...stats, _rawLogs: logs };
+      });
+      onUpdate(habits);
+    } catch (e) { onError(e); }
+  }
+
+  const unsubHabits = onSnapshot(
     collection(db, "users", userId, "habits"),
-    async (snap) => {
-      try {
-        const habits = await Promise.all(
-          snap.docs.map(async (hDoc, idx) => {
-            const hd    = hDoc.data();
-            const lSnap = await getDocs(
-              query(collection(db, "users", userId, "habits", hDoc.id, "logs"), orderBy("date", "asc"))
-            );
-            const logs = lSnap.docs.map(d => d.data());
-            const obj  = {
-              id:              hDoc.id,
-              name:            hd.name            ?? "Unnamed",
-              frequency:       hd.frequency       ?? "daily",
-              scheduledDays:   hd.scheduledDays   ?? WEEK_DAYS,
-              icon:            hd.icon            ?? "✨",
-              color:           pickColor(idx),
-              createdAt:       toDate(hd.createdAt),
-              reminderEnabled: hd.reminderEnabled ?? false,
-              reminderTime:    hd.reminderTime    ?? "08:00",
-              gcalEventId:     hd.gcalEventId     ?? null,
-              targetValue:     hd.targetValue     ?? null,
-              unit:            hd.unit            ?? null,
-            };
-            const stats = computeHabitStats(logs, obj);
-            return { ...obj, ...stats, _rawLogs: logs };
-          })
+    (snap) => {
+      habitDocs = snap.docs;
+      const liveIds = new Set(snap.docs.map(d => d.id));
+
+      // Drop listeners for habits that were deleted.
+      for (const [hid, unsub] of logUnsubs) {
+        if (!liveIds.has(hid)) {
+          unsub();
+          logUnsubs.delete(hid);
+          logsByHabit.delete(hid);
+        }
+      }
+
+      // Add a logs listener for any habit we're not already watching.
+      for (const hDoc of snap.docs) {
+        if (logUnsubs.has(hDoc.id)) continue;
+        const q = query(
+          collection(db, "users", userId, "habits", hDoc.id, "logs"),
+          orderBy("date", "asc")
         );
-        onUpdate(habits);
-      } catch (e) { onError(e); }
+        const unsub = onSnapshot(
+          q,
+          (lSnap) => { logsByHabit.set(hDoc.id, lSnap.docs.map(d => d.data())); emit(); },
+          onError
+        );
+        logUnsubs.set(hDoc.id, unsub);
+      }
+
+      emit();
     },
     onError
   );
+
+  return () => {
+    closed = true;
+    unsubHabits();
+    for (const unsub of logUnsubs.values()) unsub();
+    logUnsubs.clear();
+    logsByHabit.clear();
+  };
 }
 
 export function computeSummary(habits) {
@@ -318,7 +391,15 @@ export async function logHabitDate(uid, hid, dateStr, status) {
   if (status === "none") {
     await deleteDoc(ref);
   } else {
-    await setDoc(ref, { date: Timestamp.fromDate(new Date(dateStr)), status });
+    // Merge so we don't blow away fields we're not touching. The calendar toggle
+    // only ever sets a plain "done" or "missed" (never a partial):
+    //  - "done"  → deliberately CLEAR any stored partial: the user marked the day
+    //             fully complete, so a leftover "45%" would contradict that.
+    //  - "missed"→ PRESERVE partial: merge without touching it, so re-opening the
+    //             day still shows what was logged.
+    const data = { date: Timestamp.fromDate(new Date(dateStr)), status };
+    if (status === "done") data.partial = null;
+    await setDoc(ref, data, { merge: true });
   }
 }
 
