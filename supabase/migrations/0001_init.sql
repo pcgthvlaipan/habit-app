@@ -127,11 +127,13 @@ drop policy if exists profiles_update_own on public.profiles;
 create policy profiles_update_own on public.profiles
   for update using (auth.uid() = id) with check (auth.uid() = id);
 
--- A user must NOT be able to make themselves admin. Take the is_admin column
--- away from the `authenticated` role entirely — only service_role (the console,
--- the migration script, another admin via an RPC) can ever write it.
-revoke update (is_admin) on public.profiles from authenticated;
-revoke update (is_admin) on public.profiles from anon;
+-- A user must NOT be able to make themselves admin. A column-level REVOKE is a
+-- no-op while a table-level grant exists, so we drop the table-wide INSERT/UPDATE
+-- grants and re-grant only the safe columns. `is_admin` is then writable only by
+-- service_role (the console, the migration script) or a SECURITY DEFINER function.
+revoke insert, update on public.profiles from authenticated, anon;
+grant  insert (id, name, email, department) on public.profiles to authenticated;
+grant  update (name, email, department)     on public.profiles to authenticated;
 
 -- habits: full CRUD on your own rows only.
 drop policy if exists habits_all_own on public.habits;
