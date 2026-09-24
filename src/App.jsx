@@ -180,7 +180,7 @@ function AuthScreen() {
       <div className="auth-hero">
         <div className="auth-hero-orb orb1"/><div className="auth-hero-orb orb2"/>
         <div style={{position:"absolute",top:14,right:14,zIndex:2}}><LangToggle/></div>
-        <div className="auth-logo">h</div>
+        <div className="auth-logo" aria-hidden="true">h</div>
         <p className="auth-app-name">{t("auth.appName")}</p>
         <p className="auth-tagline">{t("auth.tagline")}</p>
       </div>
@@ -190,7 +190,7 @@ function AuthScreen() {
         {/* ── Forgot password ── */}
         {forgotMode ? (
           <>
-            <p className="auth-title">{forgotSent ? t("auth.resetSentTitle") : t("auth.resetTitle")}</p>
+            <h1 className="auth-title">{forgotSent ? t("auth.resetSentTitle") : t("auth.resetTitle")}</h1>
             <p className="auth-sub">
               {forgotSent ? t("auth.resetSentSub", { email }) : t("auth.resetSub")}
             </p>
@@ -200,40 +200,40 @@ function AuthScreen() {
                 <p style={{fontSize:13,color:"var(--text-2)",lineHeight:1.6,marginBottom:16}}>
                   {t("auth.resetHint")}
                 </p>
-                <button className="submit-btn" onClick={goToSignIn}>{t("auth.backToSignIn")}</button>
+                <button type="button" className="submit-btn" onClick={goToSignIn}>{t("auth.backToSignIn")}</button>
               </div>
             ) : (
-              <>
-                {error && <p className="auth-error">⚠️ {error}</p>}
+              <form onSubmit={e => { e.preventDefault(); submitForgot(); }} noValidate>
+                {error && <p className="auth-error" role="alert" aria-live="polite">⚠️ {error}</p>}
                 <div className="field-wrap">
-                  <label className="field-label">{t("auth.email")}</label>
-                  <input className="field-input" type="email" placeholder={t("auth.emailPlaceholder")}
+                  <label className="field-label" htmlFor="auth-forgot-email">{t("auth.email")}</label>
+                  <input id="auth-forgot-email" className="field-input" type="email" placeholder={t("auth.emailPlaceholder")}
                     value={email} onChange={e => setEmail(e.target.value)}
-                    autoCapitalize="none" autoFocus />
+                    autoComplete="email" autoCapitalize="none" autoFocus />
                 </div>
-                <button className="submit-btn" onClick={submitForgot} disabled={loading}>
+                <button type="submit" className="submit-btn" disabled={loading}>
                   {loading ? t("auth.sending") : t("auth.sendResetLink")}
                 </button>
-                <button className="cancel-btn" onClick={goToSignIn}>{t("auth.backToSignIn")}</button>
-              </>
+                <button type="button" className="cancel-btn" onClick={goToSignIn}>{t("auth.backToSignIn")}</button>
+              </form>
             )}
           </>
         ) : (
           /* ── Sign in / Register ── */
-          <>
-            <p className="auth-title">{mode === "login" ? t("auth.welcomeBack") : t("auth.createAccount")}</p>
+          <form onSubmit={e => { e.preventDefault(); submit(); }} noValidate>
+            <h1 className="auth-title">{mode === "login" ? t("auth.welcomeBack") : t("auth.createAccount")}</h1>
             <p className="auth-sub">{mode === "login" ? t("auth.signInSub") : t("auth.registerSub")}</p>
 
             {mode === "register" && (
               <>
                 <div className="field-wrap">
-                  <label className="field-label">{t("auth.name")}</label>
-                  <input className="field-input" type="text" placeholder={t("auth.namePlaceholder")}
-                    value={name} onChange={e => setName(e.target.value)} maxLength={40}/>
+                  <label className="field-label" htmlFor="auth-name">{t("auth.name")}</label>
+                  <input id="auth-name" className="field-input" type="text" placeholder={t("auth.namePlaceholder")}
+                    value={name} onChange={e => setName(e.target.value)} maxLength={40} autoComplete="name"/>
                 </div>
                 <div className="field-wrap">
-                  <label className="field-label">{t("auth.department")}</label>
-                  <select className="field-input" value={department}
+                  <label className="field-label" htmlFor="auth-dept">{t("auth.department")}</label>
+                  <select id="auth-dept" className="field-input" value={department}
                     onChange={e => setDept(e.target.value)}>
                     <option value="">{t("auth.departmentPlaceholder")}</option>
                     {depts.map(d => <option key={d} value={d}>{d}</option>)}
@@ -243,37 +243,39 @@ function AuthScreen() {
             )}
 
             <div className="field-wrap">
-              <label className="field-label">{t("auth.email")}</label>
-              <input className="field-input" type="email" placeholder={t("auth.emailPlaceholder")}
-                value={email} onChange={e => setEmail(e.target.value)} autoCapitalize="none"/>
+              <label className="field-label" htmlFor="auth-email">{t("auth.email")}</label>
+              <input id="auth-email" className="field-input" type="email" placeholder={t("auth.emailPlaceholder")}
+                value={email} onChange={e => setEmail(e.target.value)} autoCapitalize="none" autoComplete="email"/>
             </div>
 
             <div className="field-wrap">
-              <label className="field-label">{t("auth.password")}</label>
+              <label className="field-label" htmlFor="auth-password">{t("auth.password")}</label>
               <div className="pass-wrap">
-                <input className="field-input pass-input" type={show ? "text" : "password"}
+                <input id="auth-password" className="field-input pass-input" type={show ? "text" : "password"}
                   placeholder={t("auth.passwordPlaceholder")} value={pass}
                   onChange={e => setPass(e.target.value)}
-                  onKeyDown={e => e.key === "Enter" && submit()}/>
-                <button className="pass-toggle" onClick={() => setShow(s => !s)} tabIndex={-1}>
+                  autoComplete={mode === "login" ? "current-password" : "new-password"}/>
+                <button type="button" className="pass-toggle" onClick={() => setShow(s => !s)}
+                  aria-label={show ? t("auth.hidePassword") : t("auth.showPassword")}
+                  aria-pressed={show}>
                   {show ? "🙈" : "👁️"}
                 </button>
               </div>
             </div>
 
-            {error && <p className="auth-error">⚠️ {error}</p>}
+            {error && <p className="auth-error" role="alert" aria-live="polite">⚠️ {error}</p>}
 
             {/* Forgot password link — only on login mode */}
             {mode === "login" && (
               <p style={{textAlign:"right",marginTop:-4,marginBottom:8}}>
-                <button className="auth-link" style={{fontSize:12,color:"var(--text-2)"}}
+                <button type="button" className="auth-link" style={{fontSize:12,color:"var(--text-2)"}}
                   onClick={goToForgot}>
                   {t("auth.forgotPassword")}
                 </button>
               </p>
             )}
 
-            <button className="submit-btn" onClick={submit} disabled={loading}>
+            <button type="submit" className="submit-btn" disabled={loading}>
               {loading
                 ? (mode === "login" ? t("auth.signingIn") : t("auth.creating"))
                 : (mode === "login" ? t("auth.signIn") : t("auth.createBtn"))}
@@ -281,11 +283,11 @@ function AuthScreen() {
 
             <p className="auth-switch">
               {mode === "login" ? t("auth.noAccount") : t("auth.haveAccount")}
-              <button className="auth-link" onClick={() => { setMode(m => m === "login" ? "register" : "login"); clearError(); }}>
+              <button type="button" className="auth-link" onClick={() => { setMode(m => m === "login" ? "register" : "login"); clearError(); }}>
                 {mode === "login" ? t("auth.registerLink") : t("auth.signInLink")}
               </button>
             </p>
-          </>
+          </form>
         )}
       </div>
 
@@ -328,30 +330,29 @@ function ResetPasswordScreen({ onDone }) {
         <p className="auth-app-name">{t("auth.appName")}</p>
       </div>
       <div className="auth-card">
-        <p className="auth-title">{t("auth.setNewTitle")}</p>
+        <h1 className="auth-title">{t("auth.setNewTitle")}</h1>
         <p className="auth-sub">{t("auth.setNewSub")}</p>
 
         {ok ? (
-          <p className="auth-error" style={{background:"#F0FFF6",color:"#34C77B"}}>✓ {t("auth.passwordUpdated")}</p>
+          <p className="auth-error" role="status" style={{background:"#F0FFF6",borderColor:"#C8F0D8",color:"#177245"}}>✓ {t("auth.passwordUpdated")}</p>
         ) : (
-          <>
-            {error && <p className="auth-error">⚠️ {error}</p>}
+          <form onSubmit={e => { e.preventDefault(); submit(); }} noValidate>
+            {error && <p className="auth-error" role="alert" aria-live="polite">⚠️ {error}</p>}
             <div className="field-wrap">
-              <label className="field-label">{t("auth.newPassword")}</label>
-              <input className="field-input" type="password" value={pass}
-                placeholder={t("auth.passwordPlaceholder")}
+              <label className="field-label" htmlFor="reset-new-password">{t("auth.newPassword")}</label>
+              <input id="reset-new-password" className="field-input" type="password" value={pass}
+                placeholder={t("auth.passwordPlaceholder")} autoComplete="new-password"
                 onChange={e => setPass(e.target.value)} autoFocus/>
             </div>
             <div className="field-wrap">
-              <label className="field-label">{t("auth.confirmPassword")}</label>
-              <input className="field-input" type="password" value={confirm}
-                onChange={e => setConfirm(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && submit()}/>
+              <label className="field-label" htmlFor="reset-confirm-password">{t("auth.confirmPassword")}</label>
+              <input id="reset-confirm-password" className="field-input" type="password" value={confirm}
+                autoComplete="new-password" onChange={e => setConfirm(e.target.value)}/>
             </div>
-            <button className="submit-btn" onClick={submit} disabled={loading}>
+            <button type="submit" className="submit-btn" disabled={loading}>
               {loading ? t("auth.updating") : t("auth.updatePasswordBtn")}
             </button>
-          </>
+          </form>
         )}
       </div>
     </div></div>
@@ -521,7 +522,7 @@ function Dashboard({ authUser }) {
     <div className="shell"><div className="phone">
       <Header user={user??{name:authUser.email?.split("@")[0]??"Friend",avatarInitial:"F"}} onLogout={logoutUser} earnedCount={earnedBadges.length}/>
 
-      <div className="tab-bar">
+      <div className="tab-bar glass-card">
         {[["today","🏠"],["calendar","📅"],["stats","📊"],["reminders","⏰"],["badges","🏆"],["settings","⚙️"]].map(([tb,l])=>(
           <button key={tb} className={`tab-btn${tab===tb?" tab-btn--active":""}`} onClick={()=>setTab(tb)}>{l}</button>
         ))}
@@ -538,7 +539,7 @@ function Dashboard({ authUser }) {
           onSelect={setSelected} onLog={handleLog}
           onEdit={h=>setEditing(h)} onDelete={handleDelete}/>
         {habits.length>0&&<RewardsCard summary={summary} habits={habits} earnedBadges={earnedBadges}/>}
-        <AICoachCard summary={summary} earnedBadges={earnedBadges}/>
+        <AICoachCard summary={summary} habits={habits} earnedBadges={earnedBadges}/>
       </>}
 
       {tab==="calendar"&&<>
@@ -620,12 +621,12 @@ const CARDS_CFG = [
 function SummaryCards({data}) {
   const { t } = useT();
   return (
-    <div className="summary-grid anim-1">
+    <div className="summary-panel glass-card anim-1">
       {CARDS_CFG.map(({key,labelKey,icon,accent,fmt})=>(
-        <div key={key} className="stat-card" style={{borderTopColor:accent}}>
-          <span className="stat-icon" style={{color:accent}}>{icon}</span>
-          <span className="stat-value">{fmt(data[key] ?? 0)}</span>
-          <span className="stat-label">{t(labelKey)}</span>
+        <div key={key} className="glass-stat">
+          <span className="glass-stat-icon" style={{color:accent}}>{icon}</span>
+          <span className="glass-stat-value">{fmt(data[key] ?? 0)}</span>
+          <span className="glass-stat-label">{t(labelKey)}</span>
         </div>
       ))}
     </div>
