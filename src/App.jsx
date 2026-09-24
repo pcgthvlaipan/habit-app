@@ -613,7 +613,7 @@ function Header({ user, onLogout, earnedCount }) {
 // SUMMARY CARDS
 // ═══════════════════════════════════════════════════════════════
 const CARDS_CFG = [
-  {key:"totalHabits",  labelKey:"summary.habits",  icon:"✦",  accent:"#4E8EF7", fmt:v=>v},
+  {key:"totalHabits",  labelKey:"summary.habits",  icon:"✦",  accent:"#7B4DFF", fmt:v=>v},
   {key:"doneToday",    labelKey:"summary.done",    icon:"✓",  accent:"#34C77B", fmt:v=>v},
   {key:"currentStreak",labelKey:"summary.streak",  icon:"🔥", accent:"#FF6B6B", fmt:v=>`${v}d`},
   {key:"totalPoints",  labelKey:"summary.points",  icon:"✦",  accent:"#A78BFA", fmt:v=>v},
@@ -683,7 +683,7 @@ function RewardsCard({ summary, habits, earnedBadges }) {
         <div style={{height:8,background:"#EEF0F5",borderRadius:8,overflow:"hidden"}}>
           <div style={{
             height:"100%",borderRadius:8,width:`${wkRatio*100}%`,transition:"width .5s ease",
-            background: wkDoneComplete ? "linear-gradient(90deg,#34C77B,#4E8EF7)" : "#34C77B",
+            background: wkDoneComplete ? "linear-gradient(90deg,#34C77B,#7B4DFF)" : "#34C77B",
           }}/>
         </div>
         <p style={{fontSize:11,color:"var(--text-2)",marginTop:6,lineHeight:1.5}}>
@@ -728,7 +728,7 @@ function WinToast({ data, onDone }) {
       position:"fixed",left:"50%",bottom:88,transform:"translateX(-50%)",
       zIndex:200,maxWidth:340,width:"calc(100% - 40px)",
       display:"flex",alignItems:"center",gap:12,
-      background:"linear-gradient(135deg,#34C77B,#4E8EF7)",color:"#fff",
+      background:"linear-gradient(135deg,#34C77B,#7B4DFF)",color:"#fff",
       borderRadius:16,padding:"12px 16px",boxShadow:"0 10px 30px rgba(0,0,0,.2)",
       animation:"none",
     }}>
@@ -873,7 +873,7 @@ function PartialModal({ habit, existing, onSave, onFullDone, onClose }) {
 
   const pctColor =
     pct >= 100 ? "#34C77B" :
-    pct >= 75  ? "#4E8EF7" :
+    pct >= 75  ? "#7B4DFF" :
     pct >= 50  ? "#F7B731" :
                  "#FF6B6B";
 
@@ -955,7 +955,7 @@ function PartialModal({ habit, existing, onSave, onFullDone, onClose }) {
         </div>
 
         {value > 0 && value < target && (
-          <div style={{background:"#F0F4FF",borderRadius:12,padding:"10px 14px",marginBottom:14,fontSize:13,color:"#4E8EF7",lineHeight:1.5}}>
+          <div style={{background:"#F0F4FF",borderRadius:12,padding:"10px 14px",marginBottom:14,fontSize:13,color:"#7B4DFF",lineHeight:1.5}}>
             {pct >= 75 ? t("partial.msg75") : pct >= 50 ? t("partial.msg50") : t("partial.msgLow")}
           </div>
         )}
@@ -1355,7 +1355,7 @@ function BadgesTab({earnedBadges}) {
         {t("badges.earnedOf",{earned:earnedBadges.length,total:REWARD_BADGES.length})}
       </p>
       <div style={{background:"#EEF0F5",borderRadius:20,height:8,marginBottom:24,overflow:"hidden"}}>
-        <div style={{height:"100%",borderRadius:20,background:"linear-gradient(90deg,#34C77B,#4E8EF7)",
+        <div style={{height:"100%",borderRadius:20,background:"linear-gradient(90deg,#34C77B,#7B4DFF)",
           width:`${pct}%`,transition:"width .5s ease"}}/>
       </div>
       {earnedBadges.length>0&&<>
@@ -1502,7 +1502,7 @@ function HabitStatCard({habit}) {
         </div>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
-        {[{label:t("stats.streak"),value:`${streak}d`,accent:"#FF6B6B"},{label:t("stats.done"),value:totalDone,accent:"#34C77B"},{label:t("stats.logged"),value:totalLogged,accent:"#4E8EF7"}].map(({label,value,accent})=>(
+        {[{label:t("stats.streak"),value:`${streak}d`,accent:"#FF6B6B"},{label:t("stats.done"),value:totalDone,accent:"#34C77B"},{label:t("stats.logged"),value:totalLogged,accent:"#7B4DFF"}].map(({label,value,accent})=>(
           <div key={label} style={{background:"#F7F8FC",borderRadius:12,padding:"10px 8px",textAlign:"center"}}>
             <p style={{fontSize:18,fontWeight:800,color:accent,letterSpacing:"-0.5px"}}>{value}</p>
             <p style={{fontSize:10,color:"var(--text-2)",fontWeight:600,textTransform:"uppercase",marginTop:2}}>{label}</p>
