@@ -25,7 +25,7 @@ import {
   POINTS_FULL, POINTS_PARTIAL,
   DEFAULT_DEPARTMENTS, fetchDepartments, subscribeToDepartments,
   addDepartment, removeDepartment,
-  bangkokKey,
+  bangkokKey, buildCoachPayload, getClaudeCoachMessage,
 } from "./services/habitService";
 import { useT } from "./i18n";
 import { badgeText, LANGS, MONTH_NAMES, WEEKDAY_LABELS } from "./i18n-util";
@@ -538,7 +538,7 @@ function Dashboard({ authUser }) {
           onSelect={setSelected} onLog={handleLog}
           onEdit={h=>setEditing(h)} onDelete={handleDelete}/>
         {habits.length>0&&<RewardsCard summary={summary} habits={habits} earnedBadges={earnedBadges}/>}
-        <AICoachCard summary={summary} earnedBadges={earnedBadges}/>
+        <AICoachCard summary={summary} habits={habits} earnedBadges={earnedBadges}/>
       </>}
 
       {tab==="calendar"&&<>
@@ -1289,8 +1289,15 @@ function DayCell({ d, isToday, isFuture, onLog }) {
 // ═══════════════════════════════════════════════════════════════
 // AI COACH
 // ═══════════════════════════════════════════════════════════════
-function AICoachCard({summary,earnedBadges}) {
-  const { t } = useT();
+// Survives tab switches (the card unmounts) so returning to Today doesn't re-call Claude.
+const coachMessageCache = new Map();
+const COACH_DEBOUNCE_MS = 1000;
+
+function AICoachCard({summary,habits,earnedBadges}) {
+  const { t, lang } = useT();
+  const [claudeMessage, setClaudeMessage] = useState("");
+  const [claudeLoading, setClaudeLoading] = useState(false);
+  const [claudeError, setClaudeError] = useState(false);
   const rate   = summary?.successRate ?? 0;
   const streak = summary?.currentStreak ?? 0;
   const done   = summary?.doneToday ?? 0;
@@ -1307,6 +1314,42 @@ function AICoachCard({summary,earnedBadges}) {
     ? t("coach.streak3",{streak})
     : t("coach.default");
 
+  // Key on content, not object identity: habits/summary are rebuilt on every
+  // optimistic update and realtime refresh even when nothing changed.
+  const payloadKey = useMemo(
+    () => summary ? JSON.stringify(buildCoachPayload({ summary, habits, earnedBadges, language: lang })) : "",
+    [summary, habits, earnedBadges, lang],
+  );
+
+  useEffect(() => {
+    if (!payloadKey) return;
+    const cached = coachMessageCache.get(payloadKey);
+    if (cached) {
+      setClaudeMessage(cached);
+      setClaudeError(false);
+      setClaudeLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setClaudeError(false);
+    // Debounce so a burst of taps on the habit list sends one request.
+    const timer = setTimeout(() => {
+      setClaudeLoading(true);
+      getClaudeCoachMessage(JSON.parse(payloadKey))
+        .then(nextMessage => {
+          coachMessageCache.set(payloadKey, nextMessage);
+          if (!cancelled) setClaudeMessage(nextMessage);
+        })
+        .catch(() => {
+          if (!cancelled) setClaudeError(true);
+        })
+        .finally(() => {
+          if (!cancelled) setClaudeLoading(false);
+        });
+    }, COACH_DEBOUNCE_MS);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [payloadKey]);
+
   const earnedIds = new Set(earnedBadges.map(b => b.id));
   const unearned  = REWARD_BADGES.filter(b => !earnedIds.has(b.id));
   const nextRaw   = unearned.find(b => b.type==="streak") || unearned[0];
@@ -1319,7 +1362,8 @@ function AICoachCard({summary,earnedBadges}) {
         <div className="ai-icon-box">✨</div>
         <div><span className="ai-title">{t("coach.title")}</span><span className="ai-powered">{t("coach.poweredBy")}</span></div>
       </div>
-      <p className="ai-msg">{message}</p>
+      <p className="ai-msg">{claudeLoading ? t("coach.loading") : (claudeMessage || message)}</p>
+      {claudeError&&<p className="ai-error">{t("coach.unavailable")}</p>}
       {earnedBadges.length>0&&(
         <div className="ai-badges">
           <p className="ai-badges-label">{t("coach.yourBadges")}</p>

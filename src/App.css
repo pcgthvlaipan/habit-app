@@ -145,6 +145,7 @@ button{font-family:var(--font);cursor:pointer;border:none;outline:none;}
 .ai-title{display:block;font-size:15px;font-weight:800;color:#fff}
 .ai-powered{display:block;font-size:10px;color:rgba(255,255,255,.7);font-weight:600;margin-top:2px;letter-spacing:.3px;text-transform:uppercase}
 .ai-msg{font-size:13.5px;color:rgba(255,255,255,.95);line-height:1.68;font-weight:600;position:relative;z-index:1;margin-bottom:12px}
+.ai-error{font-size:11px;color:rgba(255,255,255,.75);position:relative;z-index:1;margin:0 0 12px}
 .ai-badges{position:relative;z-index:1;margin-top:10px}
 .ai-badges-label{font-size:10px;color:rgba(255,255,255,.7);font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
 .ai-badges-row{display:flex;gap:6px;flex-wrap:wrap}

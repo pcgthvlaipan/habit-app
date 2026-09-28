@@ -206,6 +206,8 @@ const EN = {
     default: "💪 Every habit done is a vote for the person you want to become. You've got this!",
     yourBadges: "Your badges",
     next: "Next: {label} — {desc}",
+    loading: "✨ Claude is thinking about your progress…",
+    unavailable: "Claude is unavailable right now — showing a built-in tip.",
   },
   badges: {
     earnedOf: "{earned} of {total} badges earned",
@@ -473,6 +475,8 @@ const TH = {
     default: "💪 ทุกนิสัยที่ทำสำเร็จคือการโหวตให้กับคนที่คุณอยากเป็น คุณทำได้!",
     yourBadges: "เหรียญของคุณ",
     next: "ถัดไป: {label} — {desc}",
+    loading: "✨ Claude กำลังดูความคืบหน้าของคุณ…",
+    unavailable: "ตอนนี้ Claude ใช้งานไม่ได้ — แสดงคำแนะนำพื้นฐานแทน",
   },
   badges: {
     earnedOf: "ได้รับแล้ว {earned} จาก {total} เหรียญ",
