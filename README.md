@@ -12,6 +12,14 @@ pnpm dev
 
 `pnpm lint` · `pnpm build`
 
+## Deploy (Vercel)
+
+Import the GitHub repo at https://vercel.com/new — `vercel.json` sets the
+build. Add `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` under
+**Settings → Environment Variables**, then add the Vercel URL to Supabase
+**Authentication → URL Configuration** (Site URL + Redirect URLs) so
+password-reset links work.
+
 ## Claude Code
 
 This repo includes the Claude Code devcontainer feature, so the `claude` CLI is available in the project terminal once the dev container is rebuilt.
