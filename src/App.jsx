@@ -25,7 +25,7 @@ import {
   POINTS_FULL, POINTS_PARTIAL,
   DEFAULT_DEPARTMENTS, fetchDepartments, subscribeToDepartments,
   addDepartment, removeDepartment,
-  bangkokKey,
+  bangkokKey, buildCoachPayload, getClaudeCoachMessage,
 } from "./services/habitService";
 import { useT } from "./i18n";
 import { badgeText, LANGS, MONTH_NAMES, WEEKDAY_LABELS } from "./i18n-util";
@@ -538,7 +538,7 @@ function Dashboard({ authUser }) {
           onSelect={setSelected} onLog={handleLog}
           onEdit={h=>setEditing(h)} onDelete={handleDelete}/>
         {habits.length>0&&<RewardsCard summary={summary} habits={habits} earnedBadges={earnedBadges}/>}
-        <AICoachCard summary={summary} earnedBadges={earnedBadges}/>
+        <AICoachCard summary={summary} habits={habits} earnedBadges={earnedBadges}/>
       </>}
 
       {tab==="calendar"&&<>
@@ -612,7 +612,7 @@ function Header({ user, onLogout, earnedCount }) {
 // SUMMARY CARDS
 // ═══════════════════════════════════════════════════════════════
 const CARDS_CFG = [
-  {key:"totalHabits",  labelKey:"summary.habits",  icon:"✦",  accent:"#4E8EF7", fmt:v=>v},
+  {key:"totalHabits",  labelKey:"summary.habits",  icon:"✦",  accent:"#1E6BFF", fmt:v=>v},
   {key:"doneToday",    labelKey:"summary.done",    icon:"✓",  accent:"#34C77B", fmt:v=>v},
   {key:"currentStreak",labelKey:"summary.streak",  icon:"🔥", accent:"#FF6B6B", fmt:v=>`${v}d`},
   {key:"totalPoints",  labelKey:"summary.points",  icon:"✦",  accent:"#A78BFA", fmt:v=>v},
@@ -682,7 +682,7 @@ function RewardsCard({ summary, habits, earnedBadges }) {
         <div style={{height:8,background:"#EEF0F5",borderRadius:8,overflow:"hidden"}}>
           <div style={{
             height:"100%",borderRadius:8,width:`${wkRatio*100}%`,transition:"width .5s ease",
-            background: wkDoneComplete ? "linear-gradient(90deg,#34C77B,#4E8EF7)" : "#34C77B",
+            background: wkDoneComplete ? "linear-gradient(90deg,#34C77B,#1E6BFF)" : "#34C77B",
           }}/>
         </div>
         <p style={{fontSize:11,color:"var(--text-2)",marginTop:6,lineHeight:1.5}}>
@@ -727,7 +727,7 @@ function WinToast({ data, onDone }) {
       position:"fixed",left:"50%",bottom:88,transform:"translateX(-50%)",
       zIndex:200,maxWidth:340,width:"calc(100% - 40px)",
       display:"flex",alignItems:"center",gap:12,
-      background:"linear-gradient(135deg,#34C77B,#4E8EF7)",color:"#fff",
+      background:"linear-gradient(135deg,#34C77B,#1E6BFF)",color:"#fff",
       borderRadius:16,padding:"12px 16px",boxShadow:"0 10px 30px rgba(0,0,0,.2)",
       animation:"none",
     }}>
@@ -872,7 +872,7 @@ function PartialModal({ habit, existing, onSave, onFullDone, onClose }) {
 
   const pctColor =
     pct >= 100 ? "#34C77B" :
-    pct >= 75  ? "#4E8EF7" :
+    pct >= 75  ? "#1E6BFF" :
     pct >= 50  ? "#F7B731" :
                  "#FF6B6B";
 
@@ -954,7 +954,7 @@ function PartialModal({ habit, existing, onSave, onFullDone, onClose }) {
         </div>
 
         {value > 0 && value < target && (
-          <div style={{background:"#F0F4FF",borderRadius:12,padding:"10px 14px",marginBottom:14,fontSize:13,color:"#4E8EF7",lineHeight:1.5}}>
+          <div style={{background:"#E8F0FF",borderRadius:12,padding:"10px 14px",marginBottom:14,fontSize:13,color:"#1E6BFF",lineHeight:1.5}}>
             {pct >= 75 ? t("partial.msg75") : pct >= 50 ? t("partial.msg50") : t("partial.msgLow")}
           </div>
         )}
@@ -1289,8 +1289,15 @@ function DayCell({ d, isToday, isFuture, onLog }) {
 // ═══════════════════════════════════════════════════════════════
 // AI COACH
 // ═══════════════════════════════════════════════════════════════
-function AICoachCard({summary,earnedBadges}) {
-  const { t } = useT();
+// Survives tab switches (the card unmounts) so returning to Today doesn't re-call Claude.
+const coachMessageCache = new Map();
+const COACH_DEBOUNCE_MS = 1000;
+
+function AICoachCard({summary,habits,earnedBadges}) {
+  const { t, lang } = useT();
+  const [claudeMessage, setClaudeMessage] = useState("");
+  const [claudeLoading, setClaudeLoading] = useState(false);
+  const [claudeError, setClaudeError] = useState(false);
   const rate   = summary?.successRate ?? 0;
   const streak = summary?.currentStreak ?? 0;
   const done   = summary?.doneToday ?? 0;
@@ -1307,6 +1314,42 @@ function AICoachCard({summary,earnedBadges}) {
     ? t("coach.streak3",{streak})
     : t("coach.default");
 
+  // Key on content, not object identity: habits/summary are rebuilt on every
+  // optimistic update and realtime refresh even when nothing changed.
+  const payloadKey = useMemo(
+    () => summary ? JSON.stringify(buildCoachPayload({ summary, habits, earnedBadges, language: lang })) : "",
+    [summary, habits, earnedBadges, lang],
+  );
+
+  useEffect(() => {
+    if (!payloadKey) return;
+    const cached = coachMessageCache.get(payloadKey);
+    if (cached) {
+      setClaudeMessage(cached);
+      setClaudeError(false);
+      setClaudeLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setClaudeError(false);
+    // Debounce so a burst of taps on the habit list sends one request.
+    const timer = setTimeout(() => {
+      setClaudeLoading(true);
+      getClaudeCoachMessage(JSON.parse(payloadKey))
+        .then(nextMessage => {
+          coachMessageCache.set(payloadKey, nextMessage);
+          if (!cancelled) setClaudeMessage(nextMessage);
+        })
+        .catch(() => {
+          if (!cancelled) setClaudeError(true);
+        })
+        .finally(() => {
+          if (!cancelled) setClaudeLoading(false);
+        });
+    }, COACH_DEBOUNCE_MS);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [payloadKey]);
+
   const earnedIds = new Set(earnedBadges.map(b => b.id));
   const unearned  = REWARD_BADGES.filter(b => !earnedIds.has(b.id));
   const nextRaw   = unearned.find(b => b.type==="streak") || unearned[0];
@@ -1319,7 +1362,8 @@ function AICoachCard({summary,earnedBadges}) {
         <div className="ai-icon-box">✨</div>
         <div><span className="ai-title">{t("coach.title")}</span><span className="ai-powered">{t("coach.poweredBy")}</span></div>
       </div>
-      <p className="ai-msg">{message}</p>
+      <p className="ai-msg">{claudeLoading ? t("coach.loading") : (claudeMessage || message)}</p>
+      {claudeError&&<p className="ai-error">{t("coach.unavailable")}</p>}
       {earnedBadges.length>0&&(
         <div className="ai-badges">
           <p className="ai-badges-label">{t("coach.yourBadges")}</p>
@@ -1354,7 +1398,7 @@ function BadgesTab({earnedBadges}) {
         {t("badges.earnedOf",{earned:earnedBadges.length,total:REWARD_BADGES.length})}
       </p>
       <div style={{background:"#EEF0F5",borderRadius:20,height:8,marginBottom:24,overflow:"hidden"}}>
-        <div style={{height:"100%",borderRadius:20,background:"linear-gradient(90deg,#34C77B,#4E8EF7)",
+        <div style={{height:"100%",borderRadius:20,background:"linear-gradient(90deg,#34C77B,#1E6BFF)",
           width:`${pct}%`,transition:"width .5s ease"}}/>
       </div>
       {earnedBadges.length>0&&<>
@@ -1501,7 +1545,7 @@ function HabitStatCard({habit}) {
         </div>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
-        {[{label:t("stats.streak"),value:`${streak}d`,accent:"#FF6B6B"},{label:t("stats.done"),value:totalDone,accent:"#34C77B"},{label:t("stats.logged"),value:totalLogged,accent:"#4E8EF7"}].map(({label,value,accent})=>(
+        {[{label:t("stats.streak"),value:`${streak}d`,accent:"#FF6B6B"},{label:t("stats.done"),value:totalDone,accent:"#34C77B"},{label:t("stats.logged"),value:totalLogged,accent:"#1E6BFF"}].map(({label,value,accent})=>(
           <div key={label} style={{background:"#F7F8FC",borderRadius:12,padding:"10px 8px",textAlign:"center"}}>
             <p style={{fontSize:18,fontWeight:800,color:accent,letterSpacing:"-0.5px"}}>{value}</p>
             <p style={{fontSize:10,color:"var(--text-2)",fontWeight:600,textTransform:"uppercase",marginTop:2}}>{label}</p>

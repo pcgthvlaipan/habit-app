@@ -12,6 +12,36 @@ pnpm dev
 
 `pnpm lint` · `pnpm build`
 
+## Deploy (Vercel)
+
+Import the GitHub repo at https://vercel.com/new — `vercel.json` sets the
+build. Add `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` under
+**Settings → Environment Variables**, then add the Vercel URL to Supabase
+**Authentication → URL Configuration** (Site URL + Redirect URLs) so
+password-reset links work.
+
+## Claude Code
+
+This repo includes the Claude Code devcontainer feature, so the `claude` CLI is available in the project terminal once the dev container is rebuilt.
+
+```bash
+claude
+```
+
+Use it from the repo root for prompt-driven coding tasks. The app also includes a separate Supabase-backed AI coach for habit suggestions, which still requires an Anthropic API key set as a server-side secret.
+
+## Claude AI Coach
+
+The AI Coach uses the `claude-coach` Supabase Edge Function. Deploy it and set
+the Anthropic key as a server-side secret:
+
+```bash
+supabase functions deploy claude-coach
+supabase secrets set ANTHROPIC_API_KEY=your-anthropic-api-key
+```
+
+The key must not be added to `.env` as a `VITE_*` variable or shipped to the browser.
+
 ---
 
 ## First-time Supabase setup

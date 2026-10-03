@@ -5,6 +5,29 @@
 // ═══════════════════════════════════════════════════════════════
 import { supabase } from "../supabase/client";
 
+// Only the fields Claude sees — also used as a cache key so the coach isn't
+// re-called when state objects are rebuilt with identical content.
+export function buildCoachPayload({ summary, habits, earnedBadges, language = "en" }) {
+  return {
+    language,
+    summary,
+    habits: (habits ?? []).map(habit => ({
+      name: habit.name,
+      todayStatus: habit.todayStatus,
+      streak: habit.streak ?? 0,
+      successRate: habit.successRate ?? 0,
+    })),
+    earnedBadges: (earnedBadges ?? []).map(badge => badge.id),
+  };
+}
+
+export async function getClaudeCoachMessage(payload) {
+  const { data, error } = await supabase.functions.invoke("claude-coach", { body: payload });
+  if (error) throw error;
+  if (!data?.message) throw new Error("Claude returned no coaching message");
+  return data.message;
+}
+
 // ─── AUTH ────────────────────────────────────────────────────
 function shapeUser(u) {
   return u ? { uid: u.id, email: u.email ?? null } : u;
